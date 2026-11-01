@@ -1,6 +1,6 @@
 # Builds Human Typer as a real app for Mac and Windows.
 #
-# Every push and pull request builds the apps (you can download them from the
+# Every pull request and every push to main builds the apps (you can download them from the
 # run's "Artifacts" section). Pushes to main also publish them on the
 # repository's Releases page, so anyone can download them from there.
 
@@ -8,6 +8,7 @@ name: Build apps
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

@@ -15,6 +15,8 @@ the text out key by key, like a person would.
   the right letter. Sometimes it only notices one letter later. Set this to 0 if you don't want any typos.
 - **Speed stays exact.** Pauses and typos are included in the timing, so 60 WPM really takes as long as 60 WPM should
   (one "word" = 5 characters, the same rule typing tests use).
+- **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your
+  document, or fill a Word table cell by cell. See [Boxes](#boxes-one-paragraph-per-box).
 - **Pause and stop.** Push the mouse into the **top-left corner** of the screen to stop, on any computer. On Windows,
   **F8** also pauses and resumes and **Esc** stops, even while Word is the active window. When you resume it counts
   down 3 seconds first, so you have time to click back into the document.
@@ -66,6 +68,25 @@ When you download a newer version, you may need to turn Human Typer off and on a
 4. **Click inside your Word document** where the text should go, before the countdown ends (5 seconds by default).
 5. Keep your hands off the keyboard and mouse until it finishes. To stop it, push the mouse into the top-left corner
    of the screen (or press **Esc** on Windows).
+
+## Boxes: one paragraph per box
+
+Use the **Boxes** tab when the text needs to go into different places, like the answer spaces on a worksheet, text
+boxes, or the cells of a table.
+
+![The Boxes tab](screenshot-boxes.png)
+
+1. Copy your text and press **Paste & split**. Each paragraph gets its own box. (Paragraphs are split at blank lines.
+   If there are none, each line gets its own box.) You can also press **Split the Text tab**, type into the boxes
+   yourself, press **+ Add box**, or remove a box with **✕**.
+2. Choose how to get from one box to the next:
+   - **I click into each box myself.** For text boxes or spaces spread around the page. Press **Type next box**, click
+     into the matching spot in Word, and it types that box. Done boxes turn green with a ✓ and the next one turns blue.
+     On Windows, you can instead click into the spot in Word and press **F9**, and it starts straight away.
+   - **Press Tab (for a table in Word).** Click into the first cell of the table and press **Type all boxes**. It types
+     box 1, presses Tab to jump to the next cell, types box 2, and so on. (In the last cell of a Word table, Tab adds a
+     new row.)
+3. **Type this** on any box types just that box. **Start over** clears the ✓ marks.
 
 ## Tips for Word
 
