@@ -1,0 +1,106 @@
+# Builds Human Typer as a real app for Mac and Windows.
+#
+# Every pull request and every push to main builds the apps (you can download them from the
+# run's "Artifacts" section). Pushes to main also publish them on the
+# repository's Releases page, so anyone can download them from there.
+
+name: Build apps
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-latest
+            label: Mac-AppleSilicon
+          - os: macos-15-intel
+            label: Mac-Intel
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: python -m pip install pyinstaller pillow -r requirements.txt
+
+      - name: Check the window library works
+        run: python -c "import tkinter; tkinter.Tcl(); print('tkinter ok')"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed \
+            --name "Human Typer" --icon icon.png --add-data "icon.png;." \
+            --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
+            human_typer.py
+          mkdir out
+          cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
+
+      - name: Build (Mac)
+        if: runner.os == 'macOS'
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed \
+            --name "Human Typer" --icon icon.png --add-data "icon.png:." \
+            --osx-bundle-identifier com.xtroychaos.humantyper \
+            --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin \
+            --hidden-import HIServices \
+            human_typer.py
+          mkdir out
+          ditto -c -k --keepParent "dist/Human Typer.app" "out/HumanTyper-${{ matrix.label }}.zip"
+
+      - name: Quick check that the app starts
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then APP="dist/Human Typer.exe"; else APP="dist/Human Typer.app/Contents/MacOS/Human Typer"; fi
+          "$APP" & PID=$!
+          sleep 15
+          if kill -0 $PID 2>/dev/null; then echo "App is running"; kill $PID || true; else wait $PID; echo "App quit early (code $?)"; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HumanTyper-${{ matrix.label }}
+          path: out/*
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish on the Releases page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la out
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/* --target "$GITHUB_SHA" --title "Human Typer" --notes "Download the file for your computer:
+
+          - **Mac with an M1/M2/M3/M4 chip** (most Macs from 2021 on): HumanTyper-Mac-AppleSilicon.zip
+          - **Older Mac with an Intel chip**: HumanTyper-Mac-Intel.zip
+          - **Windows**: HumanTyper-Windows.exe
+
+          Not sure which Mac you have? Apple menu > About This Mac: it says Chip (Apple M...) or Processor (Intel).
+
+          See the README for first-time setup."

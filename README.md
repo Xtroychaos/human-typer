@@ -15,33 +15,50 @@ the text out key by key, like a person would.
   the right letter. Sometimes it only notices one letter later. Set this to 0 if you don't want any typos.
 - **Speed stays exact.** Pauses and typos are included in the timing, so 60 WPM really takes as long as 60 WPM should
   (one "word" = 5 characters, the same rule typing tests use).
+- **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your
+  document, or fill a Word table cell by cell. See [Boxes](#boxes-one-paragraph-per-box).
 - **Pause and stop.** Push the mouse into the **top-left corner** of the screen to stop, on any computer. On Windows,
   **F8** also pauses and resumes and **Esc** stops, even while Word is the active window. When you resume it counts
   down 3 seconds first, so you have time to click back into the document.
 - The window shows how many words are in your text and about how long it will take.
 
-## Setting it up (Windows)
+## Download
 
-1. Install Python from <https://www.python.org/downloads/>. While installing, tick **"Add Python to PATH"**.
-2. Double-click **`Start Human Typer (Windows).bat`**. The first time, it downloads one small helper (`pynput`), then the
-   window opens.
+Go to the **[Releases page](https://github.com/Xtroychaos/human-typer/releases/latest)** and download the file for
+your computer:
 
-## Setting it up (Mac)
+| Your computer | Download |
+| --- | --- |
+| Mac with an Apple chip (M1, M2, M3, M4…, most Macs from 2021 on) | `HumanTyper-Mac-AppleSilicon.zip` |
+| Older Mac with an Intel chip | `HumanTyper-Mac-Intel.zip` |
+| Windows | `HumanTyper-Windows.exe` |
 
-1. Install Python from <https://www.python.org/downloads/> (the big yellow download button, then open the file and
-   click through the installer). Use this one rather than Apple's built-in Python, which can show a blank window.
-2. Double-click **`start_mac.command`**. If the Mac says it can't be opened, **right-click** it, choose **Open**, then
-   **Open** again. The first time, it downloads one small helper (`pynput`), then the window opens.
+Not sure which Mac you have? Click the **Apple menu → About This Mac**. It says **Chip: Apple M…** or
+**Processor: Intel**.
+
+You don't need to install anything else.
+
+### First time on a Mac
+
+1. Double-click the downloaded zip to unzip it, then drag **Human Typer** into your **Applications** folder.
+2. Open it. The Mac will say it can't check the app for malicious software, because the app isn't registered with
+   Apple (that costs $99 a year). Click **Done**, then go to **System Settings → Privacy & Security**, scroll down and
+   click **Open Anyway** next to Human Typer. On older macOS versions you can right-click the app and choose **Open**
+   instead.
 3. **Give it permission to press keys.** The first time you press Start, the Mac asks for this. Go to
-   **System Settings → Privacy & Security → Accessibility**, turn on **Terminal**, then close Human Typer and open it
-   again. Without this the Mac quietly ignores the key presses and nothing gets typed.
+   **System Settings → Privacy & Security → Accessibility** and turn on **Human Typer**. Then quit Human Typer and open
+   it again. Without this the Mac quietly ignores the key presses and nothing gets typed.
 4. **To stop on a Mac:** push the mouse into the **top-left corner** of the screen, or press the **Stop** button. (The
    F8 and Esc shortcuts are Windows-only, because on a Mac they can make the window crash.)
 
-If double-clicking does nothing, open the **Terminal** app, type `bash ` (with a space), drag `start_mac.command` into
-the Terminal window and press Return.
+When you download a newer version, you may need to turn Human Typer off and on again in the Accessibility list.
 
-You can also start it from a terminal: `pip install pynput`, then `python human_typer.py`.
+### First time on Windows
+
+1. Double-click **HumanTyper-Windows.exe**.
+2. Windows may show **"Windows protected your PC"**, because the app isn't registered with Microsoft. Click
+   **More info → Run anyway**.
+3. Some antivirus programs are suspicious of any app that presses keys for you. If yours blocks it, allow it.
 
 ## How to use it
 
@@ -51,6 +68,25 @@ You can also start it from a terminal: `pip install pynput`, then `python human_
 4. **Click inside your Word document** where the text should go, before the countdown ends (5 seconds by default).
 5. Keep your hands off the keyboard and mouse until it finishes. To stop it, push the mouse into the top-left corner
    of the screen (or press **Esc** on Windows).
+
+## Boxes: one paragraph per box
+
+Use the **Boxes** tab when the text needs to go into different places, like the answer spaces on a worksheet, text
+boxes, or the cells of a table.
+
+![The Boxes tab](screenshot-boxes.png)
+
+1. Copy your text and press **Paste & split**. Each paragraph gets its own box. (Paragraphs are split at blank lines.
+   If there are none, each line gets its own box.) You can also press **Split the Text tab**, type into the boxes
+   yourself, press **+ Add box**, or remove a box with **✕**.
+2. Choose how to get from one box to the next:
+   - **I click into each box myself.** For text boxes or spaces spread around the page. Press **Type next box**, click
+     into the matching spot in Word, and it types that box. Done boxes turn green with a ✓ and the next one turns blue.
+     On Windows, you can instead click into the spot in Word and press **F9**, and it starts straight away.
+   - **Press Tab (for a table in Word).** Click into the first cell of the table and press **Type all boxes**. It types
+     box 1, presses Tab to jump to the next cell, types box 2, and so on. (In the last cell of a Word table, Tab adds a
+     new row.)
+3. **Type this** on any box types just that box. **Start over** clears the ✓ marks.
 
 ## Tips for Word
 
@@ -68,3 +104,17 @@ Other tips:
 - If you click somewhere else while it's typing, the letters go there instead. Pause it first.
 - **Keep this window on top** keeps the app visible over Word, so you can always reach the buttons.
 - It works in other programs too: Google Docs, Notepad, email and so on.
+
+## Running it from the code (optional)
+
+If you'd rather not use the downloaded app, you can run the Python file directly:
+
+- **Mac:** install Python from <https://www.python.org/downloads/>, then double-click `start_mac.command`. In the
+  Accessibility list, turn on **Terminal** instead of Human Typer.
+- **Windows:** install Python (tick **"Add Python to PATH"**), then double-click `Start Human Typer (Windows).bat`.
+- **Anywhere:** `pip install pynput`, then `python human_typer.py`.
+
+## How the apps are made
+
+Every time the code changes on `main`, GitHub builds the Mac and Windows apps on its own computers and puts them on
+the Releases page (see `.github/workflows/build.yml`). The app icon is `icon.png`.
