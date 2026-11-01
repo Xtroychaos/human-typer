@@ -15,6 +15,7 @@ the screen to stop.
 Needs:  Python 3.8+  and  pynput  (pip install pynput)
 """
 
+import os
 import random
 import sys
 import threading
@@ -273,7 +274,9 @@ class Typist:
 MAC_PERMISSION_HELP = (
     "Your Mac needs to let this app press keys.\n\n"
     "1. Open System Settings > Privacy & Security > Accessibility.\n"
-    "2. Turn on Terminal (or the app you started Human Typer from).\n"
+    + ("2. Turn on Human Typer (click + and pick it from Applications if it isn't listed).\n"
+       if getattr(sys, "frozen", False) else
+       "2. Turn on Terminal (or the app you started Human Typer from).\n") +
     "3. Close Human Typer and open it again."
 )
 
@@ -304,6 +307,12 @@ class App:
         root.title(APP_NAME)
         root.geometry("680x720" if IS_MAC else "640x620")
         root.minsize(520, 520)
+        try:  # the window icon (the .app / .exe get theirs when they're built)
+            here = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+            self._icon = tk.PhotoImage(file=os.path.join(here, "icon.png")).subsample(4)
+            root.iconphoto(True, self._icon)
+        except Exception:
+            pass
 
         self.typist = None
         self.typist_error = ""
