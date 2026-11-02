@@ -57,6 +57,8 @@ jobs:
             human_typer.py
           mkdir out
           cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
+          # The same app in a zip, with instructions, for apps that won't send .exe files.
+          python -c "import zipfile; z = zipfile.ZipFile('out/HumanTyper-Windows.zip', 'w', zipfile.ZIP_DEFLATED); z.write('dist/Human Typer.exe', 'Human Typer/Human Typer.exe'); z.write('packaging/READ ME FIRST.txt', 'Human Typer/READ ME FIRST.txt'); z.close()"
 
       - name: Build (Mac)
         if: runner.os == 'macOS'
@@ -108,7 +110,7 @@ jobs:
 
           - **Mac with an M1/M2/M3/M4 chip** (most Macs from 2021 on): HumanTyper-Mac-AppleSilicon.zip
           - **Older Mac with an Intel chip**: HumanTyper-Mac-Intel.zip
-          - **Windows**: HumanTyper-Windows.exe
+          - **Windows**: HumanTyper-Windows.exe (or HumanTyper-Windows.zip to send to someone: extract it, then open Human Typer.exe)
 
           Not sure which Mac you have? Apple menu > About This Mac: it says Chip (Apple M...) or Processor (Intel).
 

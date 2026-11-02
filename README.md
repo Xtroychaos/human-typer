@@ -39,6 +39,7 @@ your computer:
 | Mac with an Apple chip (M1, M2, M3, M4…, most Macs from 2021 on) | `HumanTyper-Mac-AppleSilicon.zip` |
 | Older Mac with an Intel chip | `HumanTyper-Mac-Intel.zip` |
 | Windows | `HumanTyper-Windows.exe` |
+| Windows, to send to someone (many apps won't send .exe files) | `HumanTyper-Windows.zip` |
 
 Not sure which Mac you have? Click the **Apple menu → About This Mac**. It says **Chip: Apple M…** or
 **Processor: Intel**.
@@ -66,7 +67,8 @@ asked, and quit and reopen it once more.
 
 ### First time on Windows
 
-1. Double-click **HumanTyper-Windows.exe**.
+1. Double-click **HumanTyper-Windows.exe**. If you got the **.zip** instead, right-click it → **Extract All…** →
+   **Extract**, then open the **Human Typer** folder and double-click **Human Typer.exe**.
 2. Windows may show **"Windows protected your PC"**, because the app isn't registered with Microsoft. Click
    **More info → Run anyway**.
 3. Some antivirus programs are suspicious of any app that presses keys for you. If yours blocks it, allow it.
