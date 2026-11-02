@@ -177,7 +177,10 @@ class Typist:
         else:
             self.kb.type(key)
 
-    def start(self, text, plan, countdown):
+    def start(self, text, plan, countdown, jumps=None):
+        """jumps: {step number: function} - each function runs just before that
+        step, to move Word's cursor into the right box."""
+        self.jumps = jumps or {}
         self.stop_event.clear()
         self.paused.clear()
         self.done_chars = 0
@@ -229,8 +232,9 @@ class Typist:
             per_weight = len(text) / total_weight
             clock = time.monotonic()
             typed_right = 0  # how far we are through the original text
+            jump = None      # how to get back into the box we're typing in
 
-            for key, weight in plan:
+            for i, (key, weight) in enumerate(plan):
                 if self.paused.is_set():
                     self.state = "paused"
                     while self.paused.is_set():
@@ -242,6 +246,16 @@ class Typist:
                         self.state = "stopped"
                         return
                     self.state = "typing"
+                    if jump:
+                        jump()  # back into the same box, right after what's typed so far
+                    clock = time.monotonic()
+
+                if i in self.jumps:
+                    jump = self.jumps[i]
+                    jump()
+                    if self.stop_event.is_set():
+                        self.state = "stopped"
+                        return
                     clock = time.monotonic()
 
                 char_seconds = 60.0 / (max(1.0, self.wpm) * CHARS_PER_WORD)
@@ -279,6 +293,148 @@ class Typist:
     @property
     def busy(self):
         return self.thread is not None and self.thread.is_alive()
+
+
+# --------------------------------------------------------------------------- #
+#  Word: read the table cells in a document, and put Word's cursor in one
+# --------------------------------------------------------------------------- #
+
+def _short(text, n=45):
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def read_word_cells(path):
+    """
+    List every table cell in a .docx file, in reading order.
+
+    Each cell is a dict with: table, row, col (numbered from 1, the way Word
+    numbers them), text (what's in it now), hint (nearby text that says what
+    the cell is for) and label (a short name to show in the app).
+    """
+    import docx                       # python-docx
+    from docx.table import _Cell
+
+    document = docx.Document(path)
+    cells = []
+    for t, table in enumerate(document.tables, 1):
+        grid = []                     # text of each cell, row by row
+        for r, row in enumerate(table.rows, 1):
+            texts = []
+            for c, tc in enumerate(row._tr.tc_lst, 1):
+                text = _Cell(tc, table).text.strip()
+                texts.append(text)
+                if tc.vMerge == "continue":
+                    continue          # the lower half of a merged cell: not its own box
+                cells.append({"table": t, "row": r, "col": c, "text": text})
+            grid.append(texts)
+        for cell in cells:
+            if cell["table"] != t:
+                continue
+            r, c = cell["row"] - 1, cell["col"] - 1
+            hint = ""
+            if c > 0 and grid[r][c - 1]:
+                hint = grid[r][c - 1]               # the question to its left
+            elif r > 0 and c < len(grid[0]) and grid[0][c]:
+                hint = grid[0][c]                   # the column heading
+            cell["hint"] = hint
+            where = f"row {cell['row']}, cell {cell['col']}"
+            if len(document.tables) > 1:
+                where = f"table {t}, " + where
+            # The question comes first, because that's how you recognise the cell.
+            if cell["text"]:
+                cell["label"] = f"has “{_short(cell['text'], 30)}” – {where}"
+            elif hint:
+                cell["label"] = f"“{_short(hint, 40)}” – {where}"
+            else:
+                cell["label"] = f"empty – {where}"
+    return cells
+
+
+def open_in_word(path):
+    """Open the document in Word (or bring it to the front if it's already open)."""
+    import subprocess
+    if IS_MAC:
+        subprocess.run(["open", "-a", "Microsoft Word", path], check=False)
+    elif sys.platform == "win32":
+        os.startfile(path)  # opens with Word
+
+
+WORD_HELP_MAC = (
+    "Human Typer couldn't control Word.\n\n"
+    "• Make sure the document is open in Microsoft Word.\n"
+    "• Allow it: System Settings > Privacy & Security > Automation > Human Typer "
+    "(or Terminal) > turn on Microsoft Word.\n\n"
+)
+WORD_HELP_WIN = (
+    "Human Typer couldn't control Word.\n\n"
+    "• Make sure the document is open in Microsoft Word (not just the preview).\n"
+    "• If Word shows a yellow bar saying Protected View, click Enable Editing.\n\n"
+)
+
+# Puts Word's cursor at the end of whatever is already in one table cell.
+# The arguments come in as: document name, table, row, cell.
+_MAC_JUMP_SCRIPT = """
+on run argv
+    set docName to item 1 of argv
+    set t to (item 2 of argv) as integer
+    set r to (item 3 of argv) as integer
+    set c to (item 4 of argv) as integer
+    tell application "Microsoft Word"
+        activate
+        set theDoc to missing value
+        repeat with d in documents
+            if (name of d) is docName then set theDoc to contents of d
+        end repeat
+        if theDoc is missing value then set theDoc to active document
+        set theCell to get cell from table (table t of theDoc) row r column c
+        set cellText to text object of theCell
+        set p to (end of content of cellText) - 1
+        select (create range theDoc start p end p)
+    end tell
+end run
+"""
+
+
+def word_jump(doc_path, table, row, col):
+    """Move Word's cursor into a table cell, after any text already there."""
+    if IS_MAC:
+        import subprocess
+        result = subprocess.run(
+            ["osascript", "-e", _MAC_JUMP_SCRIPT, os.path.basename(doc_path), str(table), str(row), str(col)],
+            capture_output=True, text=True,
+            timeout=120,  # the first time, the Mac waits while you answer "allow control of Word?"
+        )
+        if result.returncode != 0:
+            raise RuntimeError(WORD_HELP_MAC + "Details: " + (result.stderr.strip() or "unknown error"))
+    elif sys.platform == "win32":
+        try:
+            import pythoncom
+            import win32com.client
+            pythoncom.CoInitialize()     # needed once per thread
+            try:
+                word = win32com.client.GetActiveObject("Word.Application")
+            except Exception:
+                word = win32com.client.Dispatch("Word.Application")
+            doc = None
+            for d in word.Documents:
+                if os.path.normcase(str(d.FullName)) == os.path.normcase(doc_path) \
+                        or str(d.Name) == os.path.basename(doc_path):
+                    doc = d
+                    break
+            if doc is None:
+                doc = word.ActiveDocument
+            cell_range = doc.Tables(table).Cell(row, col).Range
+            cell_range.MoveEnd(1, -1)    # step back over the end-of-cell mark (1 = one character)
+            cell_range.Collapse(0)       # 0 = put the cursor at the end
+            doc.Activate()
+            cell_range.Select()
+            word.Activate()
+        except Exception as exc:
+            raise RuntimeError(WORD_HELP_WIN + "Details: " + str(exc)) from exc
+    else:
+        raise RuntimeError("Jumping into Word works on Mac and Windows only.")
+    time.sleep(0.3)  # give Word a moment to come to the front
 
 
 # --------------------------------------------------------------------------- #
@@ -346,6 +502,8 @@ class ScrollFrame(ttk.Frame):
         self.canvas.yview_scroll(step, "units")
 
 
+DIVIDER = "────── cells that already have words ──────"
+
 # Border colours for the boxes.
 BOX_IDLE, BOX_NEXT, BOX_TYPING, BOX_DONE = "#c8c8c8", "#3b82f6", "#f59e0b", "#22a559"
 
@@ -379,7 +537,9 @@ class App:
         self.pauses = tk.BooleanVar(value=True)
         self.delay = tk.IntVar(value=5)
         self.on_top = tk.BooleanVar(value=True)
-        self.box_mode = tk.StringVar(value="click")   # "click" or "tab"
+        self.box_mode = tk.StringVar(value="click")   # "click", "tab" or "word"
+        self.word = None     # the connected Word document: {"path", "name", "cells"}
+        self.jumper = word_jump
 
         self.boxes = []      # each: {"card", "text", "status", "done"}
         self.box_cols = 0
@@ -442,13 +602,24 @@ class App:
         ttk.Button(tools, text="Start over", command=self._reset_done).pack(side="right")
         ttk.Button(tools, text="Clear", command=self._clear_boxes).pack(side="right", padx=4)
 
+        doc = ttk.Frame(grid)
+        doc.pack(fill="x", pady=(6, 0))
+        ttk.Button(doc, text="Connect Word document…", command=self._connect_word).pack(side="left")
+        self.fill_btn = ttk.Button(doc, text="Fill in order", command=self._fill_in_order, state="disabled")
+        self.fill_btn.pack(side="left", padx=4)
+        self.word_info = tk.StringVar(value="Not connected. Pick a .docx with a table to choose a cell for each box.")
+        ttk.Label(doc, textvariable=self.word_info, foreground="#555").pack(side="left", padx=4)
+
         mode = ttk.Frame(grid)
         mode.pack(fill="x", pady=(6, 4))
         ttk.Label(mode, text="Going to the next box:").pack(side="left")
-        ttk.Radiobutton(mode, text="I click into each box myself", value="click",
+        ttk.Radiobutton(mode, text="I click each one", value="click",
                         variable=self.box_mode).pack(side="left", padx=(8, 4))
-        ttk.Radiobutton(mode, text="Press Tab (for a table in Word)", value="tab",
+        ttk.Radiobutton(mode, text="Press Tab (Word table)", value="tab",
                         variable=self.box_mode).pack(side="left", padx=4)
+        self.word_radio = ttk.Radiobutton(mode, text="Jump to my Word cells", value="word",
+                                          variable=self.box_mode, state="disabled")
+        self.word_radio.pack(side="left", padx=4)
 
         self.box_info = tk.StringVar()
         ttk.Label(grid, textvariable=self.box_info, foreground="#555").pack(side="bottom", anchor="w", pady=(4, 0))
@@ -519,7 +690,7 @@ class App:
         title.pack(side="left")
         status = tk.StringVar()
         ttk.Label(head, textvariable=status).pack(side="left", padx=8)
-        entry = {"card": card, "title": title, "status": status, "done": False}
+        entry = {"card": card, "title": title, "status": status, "done": False, "target": None}
         ttk.Button(head, text="✕", width=3, command=lambda: self._remove_box(entry)).pack(side="right")
         ttk.Button(head, text="Type this", command=lambda: self._type_box(entry)).pack(side="right", padx=4)
         body = tk.Text(card, wrap="word", undo=True, height=4, font=("", 13 if IS_MAC else 10))
@@ -528,11 +699,109 @@ class App:
             body.insert("1.0", text)
         body.bind("<<Modified>>", lambda e, b=body: self._on_box_changed(b))
         entry["text"] = body
+        # Which Word cell this box goes in (shown once a document is connected).
+        where = ttk.Frame(card)
+        ttk.Label(where, text="Goes in:").pack(side="left")
+        combo = ttk.Combobox(where, state="readonly", style="Wide.TCombobox",
+                             postcommand=lambda: self._widen(combo))
+        combo.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        combo.bind("<<ComboboxSelected>>", lambda e: self._on_target_picked(entry))
+        entry["where"], entry["combo"] = where, combo
+        self._show_target(entry)
         self.boxes.append(entry)
         self._layout_boxes(force=True)
         if focus:
             body.focus_set()
             self.root.after(50, lambda: self.box_area.canvas.yview_moveto(1.0))
+
+    # ----- Word document -----
+    def _connect_word(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Pick your Word document",
+            filetypes=[("Word documents", "*.docx"), ("All files", "*.*")],
+        )
+        if path:
+            self.connect_word(path)
+
+    def connect_word(self, path, open_it=True):
+        try:
+            cells = read_word_cells(path)
+        except ImportError:
+            self.status.set("Reading Word documents needs python-docx:  pip install python-docx")
+            return
+        except Exception as exc:
+            self.status.set(f"Couldn't read that document. Is it a .docx file? ({exc})")
+            return
+        if not cells:
+            self.status.set("That document has no tables. Add a table in Word (Insert > Table), save, "
+                            "and connect it again. Or use 'I click each one'.")
+            return
+        # The dropdown lists the empty cells first, since that's where answers go.
+        filled = [c for c in cells if c["text"]]
+        choices = [None] + [c for c in cells if not c["text"]] + ([DIVIDER] + filled if filled else [])
+        self.word = {"path": os.path.abspath(path), "name": os.path.basename(path), "cells": cells,
+                     "choices": choices,
+                     "labels": [c["label"] if isinstance(c, dict) else c or "— skip this box —" for c in choices]}
+        empty = sum(1 for c in cells if not c["text"])
+        self.word_info.set(f"{self.word['name']} · {len(cells)} cells ({empty} empty)")
+        self.fill_btn.configure(state="normal")
+        self.word_radio.configure(state="normal")
+        for b in self.boxes:
+            b["combo"].configure(values=self.word["labels"])
+            b["target"] = None
+            self._show_target(b)
+        self._fill_in_order()
+        self.box_mode.set("word")
+        if open_it:
+            try:
+                open_in_word(self.word["path"])
+            except Exception:
+                pass
+        self.status.set(f"Connected to {self.word['name']}. Check which cell each box goes in, "
+                        "then press Type into Word.")
+
+    def _fill_in_order(self):
+        """Put the boxes into the empty cells, in order."""
+        if not self.word:
+            return
+        empty = [c for c in self.word["cells"] if not c["text"]]
+        for b, cell in zip(self.boxes, empty + [None] * len(self.boxes)):
+            self._set_target(b, cell)
+        self._refresh_boxes()
+
+    def _set_target(self, entry, cell):
+        entry["target"] = cell
+        if self.word:
+            entry["combo"].configure(values=self.word["labels"])
+            entry["combo"].current(self.word["choices"].index(cell) if cell else 0)
+
+    def _on_target_picked(self, entry):
+        choice = self.word["choices"][entry["combo"].current()] if self.word else None
+        if not isinstance(choice, dict):      # "skip" or the divider line
+            choice = None
+            self._set_target(entry, None)
+        entry["target"] = choice
+        self._refresh_boxes()
+
+    def _widen(self, combo):
+        """Let the dropdown list be wider than the box, so long questions fit."""
+        try:
+            from tkinter import font as tkfont
+            f = tkfont.nametofont("TkDefaultFont")
+            need = max((f.measure(v) for v in combo.cget("values")), default=0) + 40
+            extra = max(0, min(need, self.root.winfo_width() - 40) - combo.winfo_width())
+            ttk.Style().configure("Wide.TCombobox", postoffset=(0, 0, extra, 0))
+        except Exception:
+            pass
+
+    def _show_target(self, entry):
+        if self.word:
+            entry["where"].pack(fill="x", pady=(4, 0))
+            if entry["target"] is None and not entry["combo"].get():
+                self._set_target(entry, None)
+        else:
+            entry["where"].pack_forget()
 
     def _on_box_changed(self, body):
         if body.edit_modified():
@@ -565,6 +834,8 @@ class App:
         for part in parts:
             self._add_box(part)
         self.box_area.canvas.yview_moveto(0)
+        if self.word:
+            self._fill_in_order()
         self.status.set(f"Split into {len(parts)} boxes. Check them, then press Type next box (or Type all boxes) at the bottom.")
 
     def _paste_split(self):
@@ -610,7 +881,8 @@ class App:
         """Update colours, labels, the Start button and the box summary."""
         typing_box = self.run.get("current") if self.run else None
         nxt = self._next_box()
-        click_mode = self.box_mode.get() == "click"
+        mode = self.box_mode.get()
+        click_mode = mode == "click"
         for b in self.boxes:
             if b is typing_box:
                 colour, label = BOX_TYPING, "✎ Typing…"
@@ -618,6 +890,8 @@ class App:
                 colour, label = BOX_DONE, "✓ Done"
             elif b is nxt and click_mode:
                 colour, label = BOX_NEXT, "▶ Next"
+            elif mode == "word" and b["target"] is None and self._box_text(b).strip():
+                colour, label = BOX_IDLE, "(skipped)"
             else:
                 colour, label = BOX_IDLE, ""
             b["card"].configure(highlightbackground=colour, highlightcolor=colour)
@@ -632,7 +906,10 @@ class App:
                           f"about {format_duration(seconds_for(' ' * chars, wpm))} in all")
 
         if self._on_boxes_tab():
-            if not click_mode:
+            if mode == "word":
+                n = sum(1 for b in self.boxes if b["target"] and self._box_text(b).strip())
+                text = f"▶  Type into Word ({n} box{'' if n == 1 else 'es'})"
+            elif mode == "tab":
                 text = "▶  Type all boxes"
             elif nxt is not None:
                 text = f"▶  Type next box ({self.boxes.index(nxt) + 1})" + ("" if IS_MAC else "  F9")
@@ -701,16 +978,19 @@ class App:
             return False
         return True
 
-    def _begin(self, text, run, countdown=None):
-        plan = build_plan(
+    def _plan(self, text):
+        return build_plan(
             text,
             variation=self.variation.get() / 100.0,
             typo_percent=float(self.typos.get()),
             natural_pauses=self.pauses.get(),
         )
+
+    def _begin(self, text, run, countdown=None, plan=None, jumps=None):
+        plan = plan if plan is not None else self._plan(text)
         self.run = run
         self.typist.wpm = max(1, self._safe_int(self.wpm, 60))
-        self.typist.start(text, plan, countdown or max(1, self._safe_int(self.delay, 5)))
+        self.typist.start(text, plan, countdown or max(1, self._safe_int(self.delay, 5)), jumps)
         self.start_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
         self.stop_btn.configure(state="normal")
@@ -718,7 +998,9 @@ class App:
 
     def _start(self, countdown=None):
         if self._on_boxes_tab():
-            if self.box_mode.get() == "tab":
+            if self.box_mode.get() == "word":
+                self._type_into_word()
+            elif self.box_mode.get() == "tab":
                 self._type_all_boxes()
             else:
                 nxt = self._next_box()
@@ -738,6 +1020,12 @@ class App:
         text = self._box_text(entry)
         if not text.strip():
             self.status.set("That box is empty.")
+            return
+        if self.box_mode.get() == "word" and self.word:
+            if entry["target"] is None:
+                self.status.set("Pick a Word cell for that box first (Goes in:).")
+                return
+            self._type_into_word([entry])
             return
         if self._ready():
             self._begin(text, {"kind": "box", "box": entry, "current": entry}, countdown)
@@ -759,6 +1047,36 @@ class App:
         for b in todo:
             b["done"] = False
         self._begin("\t".join(texts), {"kind": "tab", "bounds": bounds, "current": todo[0]})
+
+    def _type_into_word(self, todo=None):
+        """Jump into each box's Word cell and type it there."""
+        if not self.word:
+            self.status.set("Connect a Word document first.")
+            return
+        if todo is None:
+            todo = [b for b in self.boxes if b["target"] and self._box_text(b).strip()]
+        if not todo:
+            self.status.set("No box has a Word cell yet. Pick one under 'Goes in:' or press Fill in order.")
+            return
+        if not self._ready():
+            return
+        path = self.word["path"]
+        plan, jumps, bounds, texts, pos = [], {}, [], [], 0
+        for b in todo:
+            text = self._box_text(b).replace("\t", " ")  # a Tab would jump to another cell
+            cell = b["target"]
+            if cell["text"]:
+                # The cell already has words in it, like "Name:" - don't glue onto them.
+                text = (" " if cell["text"].endswith(":") else "\n") + text
+            jumps[len(plan)] = (lambda c=cell: self.jumper(path, c["table"], c["row"], c["col"]))
+            plan += self._plan(text)
+            pos += len(text)
+            bounds.append((b, pos))
+            texts.append(text)
+            b["done"] = False
+        # Word comes to the front by itself, so only a short heads-up is needed.
+        self._begin("".join(texts), {"kind": "word", "bounds": bounds, "current": todo[0]},
+                    countdown=2, plan=plan, jumps=jumps)
 
     def _pause(self):
         if self.typist:
@@ -804,7 +1122,7 @@ class App:
         run = self.run
         if run is None:
             return
-        if run["kind"] == "tab":
+        if run["kind"] in ("tab", "word"):
             current = None
             for b, end in run["bounds"]:
                 if t.done_chars >= end:
@@ -826,7 +1144,9 @@ class App:
             run_kind = self.run["kind"] if self.run else None
             self._track_run(t)
             state = t.state
-            if state == "countdown":
+            if state == "countdown" and run_kind == "word":
+                self.status.set(f"Switching to Word in {t.countdown_left}… hands off the keyboard and mouse.")
+            elif state == "countdown":
                 self.status.set(f"Click inside your Word document now… starting in {t.countdown_left}")
             elif state == "typing":
                 left = seconds_for(" " * (t.total_chars - t.done_chars), t.wpm)
@@ -847,7 +1167,7 @@ class App:
             elif state == "stopped" and run_kind is not None:
                 self.status.set("Stopped.")
             elif state == "error" and run_kind is not None:
-                self.status.set("Something went wrong: " + t.error)
+                self.status.set(t.error if run_kind == "word" else "Something went wrong: " + t.error)
 
             self.pause_btn.configure(text=self._label("Resume" if t.paused.is_set() else "Pause"))
             if not t.busy and str(self.start_btn["state"]) == "disabled":

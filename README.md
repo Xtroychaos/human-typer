@@ -17,6 +17,8 @@ the text out key by key, like a person would.
   (one "word" = 5 characters, the same rule typing tests use).
 - **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your
   document, or fill a Word table cell by cell. See [Boxes](#boxes-one-paragraph-per-box).
+- **Connect a Word document.** Pick your worksheet, choose which table cell each paragraph goes in, and it jumps into
+  each cell and types there. See [Connect a Word document](#connect-a-word-document-and-pick-the-cells).
 - **Pause and stop.** Push the mouse into the **top-left corner** of the screen to stop, on any computer. On Windows,
   **F8** also pauses and resumes and **Esc** stops, even while Word is the active window. When you resume it counts
   down 3 seconds first, so you have time to click back into the document.
@@ -88,6 +90,33 @@ boxes, or the cells of a table.
      new row.)
 3. **Type this** on any box types just that box. **Start over** clears the ✓ marks.
 
+## Connect a Word document and pick the cells
+
+If your worksheet is a **table** in Word (for example questions in one column and answers in the other), Human Typer
+can open it, show you every cell, and jump into the cells you pick by itself.
+
+![Boxes connected to a Word document](screenshot-word.png)
+
+1. Save your document as a `.docx` file.
+2. On the **Boxes** tab, put your answers in the boxes (for example with **Paste & split**).
+3. Press **Connect Word document…** and pick the file. Human Typer opens it in Word and reads its tables.
+4. Under each box, **Goes in:** shows which cell it will be typed into. Each cell is named by the question next to it,
+   like *“2. What is photosynthesis?” – row 3, cell 2*. Human Typer fills them in order into the empty cells to start
+   with; change any of them, or pick **— skip this box —**. **Fill in order** sets them back to the empty cells in order.
+5. Press **Type into Word**. Word comes to the front, and Human Typer clicks into each cell for you and types that box
+   there. Keep your hands off the keyboard and mouse until it's done.
+
+Good to know:
+
+- It types **after** anything already in a cell, so a label like "Name:" stays (it adds a space after a `:`, or starts
+  a new line otherwise).
+- If you **pause** and click around, it jumps back into the right cell when you resume.
+- It reads the cells from the saved file. If you change the table in Word, save and connect again.
+- **Mac:** the first time, the Mac asks **"Human Typer wants access to control Microsoft Word"**. Click **OK**. If you
+  clicked Don't Allow, turn it on in **System Settings → Privacy & Security → Automation → Human Typer → Microsoft Word**.
+- **Windows:** if Word shows a yellow **Protected View** bar, click **Enable Editing** first.
+- Text boxes and blank lines can't be picked this way. For those, use **I click each one**.
+
 ## Tips for Word
 
 Word changes some things as you type. The text still ends up right, but it may look a little different:
@@ -112,7 +141,7 @@ If you'd rather not use the downloaded app, you can run the Python file directly
 - **Mac:** install Python from <https://www.python.org/downloads/>, then double-click `start_mac.command`. In the
   Accessibility list, turn on **Terminal** instead of Human Typer.
 - **Windows:** install Python (tick **"Add Python to PATH"**), then double-click `Start Human Typer (Windows).bat`.
-- **Anywhere:** `pip install pynput`, then `python human_typer.py`.
+- **Anywhere:** `pip install -r requirements.txt`, then `python human_typer.py`.
 
 ## How the apps are made
 

@@ -21,7 +21,7 @@ if [ -z "$PY" ]; then
 fi
 
 echo "Getting things ready (only slow the first time)..."
-"$PY" -m pip install --quiet --user --disable-pip-version-check pynput 2>/dev/null \
-    || "$PY" -m pip install --quiet --user --break-system-packages --disable-pip-version-check pynput
+"$PY" -m pip install --quiet --user --disable-pip-version-check -r requirements.txt 2>/dev/null \
+    || "$PY" -m pip install --quiet --user --break-system-packages --disable-pip-version-check -r requirements.txt
 
 "$PY" human_typer.py

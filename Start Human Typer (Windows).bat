@@ -14,6 +14,6 @@ if not %errorlevel%==0 (
 )
 
 echo Getting things ready (only slow the first time)...
-%PY% -m pip install --quiet --disable-pip-version-check pynput
+%PY% -m pip install --quiet --disable-pip-version-check -r requirements.txt
 
 start "" %PY%w human_typer.py
