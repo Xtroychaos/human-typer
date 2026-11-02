@@ -41,8 +41,11 @@ jobs:
       - name: Install tools
         run: python -m pip install pyinstaller pillow -r requirements.txt
 
-      - name: Check the window library works
-        run: python -c "import tkinter; tkinter.Tcl(); print('tkinter ok')"
+      - name: Check the window library and Word reader work
+        run: |
+          python -c "import tkinter; tkinter.Tcl(); print('tkinter ok')"
+          python -c "import docx; d = docx.Document(); d.add_table(rows=2, cols=2); d.save('t.docx')"
+          python -c "import human_typer as h; c = h.read_word_cells('t.docx'); assert len(c) == 4, c; print('word reader ok')"
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
@@ -50,6 +53,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed \
             --name "Human Typer" --icon icon.png --add-data "icon.png;." \
             --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
+            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx \
             human_typer.py
           mkdir out
           cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
@@ -61,8 +65,13 @@ jobs:
             --name "Human Typer" --icon icon.png --add-data "icon.png:." \
             --osx-bundle-identifier com.xtroychaos.humantyper \
             --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin \
-            --hidden-import HIServices \
+            --hidden-import HIServices --collect-data docx \
             human_typer.py
+          # Lets the Mac ask "Human Typer wants to control Microsoft Word", then re-signs the app.
+          plutil -insert NSAppleEventsUsageDescription -string \
+            "Human Typer moves Word's cursor into the table cells you pick, so it can type your answers there." \
+            "dist/Human Typer.app/Contents/Info.plist"
+          codesign --force --deep --sign - "dist/Human Typer.app"
           mkdir out
           ditto -c -k --keepParent "dist/Human Typer.app" "out/HumanTyper-${{ matrix.label }}.zip"
 
