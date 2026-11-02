@@ -148,7 +148,12 @@ apps, browse, or type somewhere else.
   the mouse and keyboard yourself.
 - **Mac:** the first time, click **OK** when the Mac asks to let Human Typer control Microsoft Word (or turn it on in
   **System Settings → Privacy & Security → Automation**). The Accessibility permission isn't needed for this mode.
-- Avoid clicking around inside the same Word document while it types, or the text follows your cursor.
+- **Pin it to one spot** (ticked by default) keeps the text going exactly where it started, even if you click
+  somewhere else in the same Word document, scroll, or switch apps. In Word cells mode, each cell is pinned when
+  Human Typer moves into it. After a pause it carries on in the same place, with no need to click back in.
+  With the pin on, Word's AutoCorrect doesn't change the words as they appear, and Word doesn't scroll along
+  with the typing. Untick it to type at Word's cursor instead.
+- Try not to type in that same document yourself, above the pinned spot, while it's typing.
 
 ## Tips for Word
 

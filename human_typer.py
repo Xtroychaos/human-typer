@@ -298,13 +298,16 @@ class Typist:
                         self.state = "stopped"
                         return
                     self.state = "typing"
-                    if jump and getattr(jump, "again_after_pause", True):
+                    pinned = getattr(self.output, "pinned", False)
+                    if jump and getattr(jump, "again_after_pause", True) and not pinned:
                         jump()  # back into the same box, right after what's typed so far
                     clock = time.monotonic()
 
                 if i in self.jumps:
                     jump = self.jumps[i]
                     jump()
+                    if self.output is not None and hasattr(self.output, "repin"):
+                        self.output.repin()   # pin to the box we just moved into
                     if self.stop_event.is_set():
                         self.state = "stopped"
                         return
@@ -497,19 +500,30 @@ class WordBackground:
     """
     Types straight into Word through Word's own scripting instead of pressing
     real keys, so Word can stay in the background while you use other apps.
-    It types wherever Word's cursor is in the front document.
+
+    pinned=False: types wherever Word's cursor is (like a person typing).
+    pinned=True:  remembers where Word's cursor was when typing started (or
+                  when it moved into a table cell) and keeps putting the text
+                  exactly there, even if you click somewhere else in Word.
 
     Make a new one for each run (on Windows it belongs to the thread that uses it).
     """
 
-    def __init__(self, run_on_main=None):
+    def __init__(self, run_on_main=None, pinned=False):
         # On a Mac, AppleScript has to run on the app's main thread.
         self.run_on_main = run_on_main or (lambda fn: fn())
+        self.pinned = pinned
         self._word = None
+        self._pin = None       # Windows: a Word Range that stays put. Mac: (document name, position)
 
     @staticmethod
     def _quote(text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    @staticmethod
+    def _word_length(text):
+        """How many characters Word counts (it counts emoji and some symbols as 2)."""
+        return len(text.encode("utf-16-le")) // 2
 
     def _mac(self, command):
         script = 'tell application "Microsoft Word" to ' + command
@@ -520,10 +534,11 @@ class WordBackground:
             if error is not None:
                 detail = error.get("NSAppleScriptErrorMessage", str(error)) if hasattr(error, "get") else str(error)
                 raise RuntimeError(WORD_HELP_MAC + "Details: " + str(detail))
+            return result.stringValue() if result is not None else None
 
-        self.run_on_main(go)
+        return self.run_on_main(go)
 
-    def _selection(self):
+    def _app(self):
         if self._word is None:
             try:
                 import pythoncom
@@ -532,9 +547,45 @@ class WordBackground:
                 self._word = win32com.client.GetActiveObject("Word.Application")
             except Exception as exc:
                 raise RuntimeError(WORD_HELP_WIN + "Details: " + str(exc)) from exc
-        return self._word.Selection
+        return self._word
 
+    def _selection(self):
+        return self._app().Selection
+
+    # ----- the pin -----
+    def repin(self):
+        """Pin to wherever Word's cursor is right now."""
+        if not self.pinned:
+            return
+        if IS_MAC:
+            answer = self._mac("return (name of active document) & tab & ((selection start of selection) as text)")
+            name, pos = (answer or "").rsplit("\t", 1)
+            self._pin = (name, int(pos))
+        elif sys.platform == "win32":
+            spot = self._selection().Range.Duplicate
+            spot.Collapse(1)          # 1 = the start of whatever is selected
+            self._pin = spot          # Word moves this along if text is added above it
+
+    def _mac_spot(self, start, end):
+        name, _ = self._pin
+        return f"(create range (document {self._quote(name)}) start {start} end {end})"
+
+    # ----- typing -----
     def type(self, ch):
+        if self.pinned:
+            if self._pin is None:
+                self.repin()
+            if IS_MAC:
+                name, pos = self._pin
+                what = {"\n": "return", "\t": "tab"}.get(ch) or self._quote(ch)
+                self._mac(f"insert text {what} at {self._mac_spot(pos, pos)}")
+                self._pin = (name, pos + self._word_length(ch))
+            elif sys.platform == "win32":
+                self._pin.InsertAfter("\r" if ch == "\n" else ch)
+                self._pin.Collapse(0)  # 0 = move the pin to the end of what was just added
+            else:
+                raise RuntimeError("Background typing works with Word on Mac and Windows only.")
+            return
         if IS_MAC:
             if ch == "\n":
                 self._mac("type paragraph selection")
@@ -551,6 +602,18 @@ class WordBackground:
             raise RuntimeError("Background typing works with Word on Mac and Windows only.")
 
     def backspace(self):
+        if self.pinned and self._pin is not None:
+            if IS_MAC:
+                name, pos = self._pin
+                self._mac(f'set content of {self._mac_spot(pos - 1, pos)} to ""')
+                self._pin = (name, pos - 1)
+            elif sys.platform == "win32":
+                gone = self._pin.Duplicate
+                gone.MoveStart(1, -1)  # 1 = one character back
+                gone.Delete()
+                gone.Collapse(1)
+                self._pin = gone       # the pin is now where the deleted letter was
+            return
         if IS_MAC:
             self._mac("type backspace selection")
         elif sys.platform == "win32":
@@ -686,6 +749,7 @@ class App:
         self.wpm_lo = tk.IntVar(value=40)
         self.wpm_hi = tk.IntVar(value=90)
         self.background = tk.BooleanVar(value=False)
+        self.pin = tk.BooleanVar(value=True)
         self.box_mode = tk.StringVar(value="click")   # "click", "tab" or "word"
         self.word = None     # the connected Word document: {"path", "name", "cells"}
         self.jumper = word_jump
@@ -830,6 +894,14 @@ class App:
             bg, text="Type in the background (Word only: keep using your computer while it types)",
             variable=self.background, state="normal" if (IS_MAC or sys.platform == "win32") else "disabled")
         self.bg_check.pack(side="left")
+        pin_row = ttk.Frame(bottom)
+        pin_row.pack(fill="x", padx=32, pady=(0, 4))
+        self.pin_check = ttk.Checkbutton(
+            pin_row, text="Pin it to one spot (keeps typing there even if you click somewhere else in Word)",
+            variable=self.pin, state="disabled")
+        self.pin_check.pack(side="left")
+        self.background.trace_add("write", lambda *_: self.pin_check.configure(
+            state="normal" if self.background.get() else "disabled"))
 
         # Controls
         ctl = ttk.Frame(bottom)
@@ -1258,7 +1330,7 @@ class App:
             text, plan,
             (countdown or 2) if bg else (countdown or max(1, self._safe_int(self.delay, 5))),
             jumps,
-            output=WordBackground(self._on_main) if bg else None,
+            output=WordBackground(self._on_main, pinned=self.pin.get()) if bg else None,
             corner_stop=not bg,   # you're using the mouse yourself, so no corner stop
         )
         self.start_btn.configure(state="disabled")
