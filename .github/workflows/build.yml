@@ -65,7 +65,7 @@ jobs:
             --name "Human Typer" --icon icon.png --add-data "icon.png:." \
             --osx-bundle-identifier com.xtroychaos.humantyper \
             --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin \
-            --hidden-import HIServices --collect-data docx \
+            --hidden-import HIServices --hidden-import Foundation --collect-data docx \
             human_typer.py
           # Lets the Mac ask "Human Typer wants to control Microsoft Word", then re-signs the app.
           plutil -insert NSAppleEventsUsageDescription -string \

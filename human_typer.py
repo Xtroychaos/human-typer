@@ -131,6 +131,14 @@ def format_duration(seconds):
     return f"{h} h {m} min"
 
 
+def average_speed(lo, hi):
+    """The speed that gives the right total time when the speed wanders evenly
+    between lo and hi. (Slow stretches take longer, so it's below the middle.)"""
+    import math
+    lo, hi = sorted((max(1.0, lo), max(1.0, hi)))
+    return lo if hi - lo < 1e-9 else (hi - lo) / math.log(hi / lo)
+
+
 def split_paragraphs(text):
     """Split text into paragraphs for the boxes.
 
@@ -158,6 +166,12 @@ class Typist:
         self.mouse = Mouse()
         self.Button = Button
         self.wpm = 60.0
+        self.wpm_range = None   # (slowest, fastest) for a speed that wanders, or None
+        self.live_wpm = 60.0    # the speed right now
+        self.output = None      # None = press real keys; or a WordBackground
+        self.corner_stop = True
+        self.rng = random.Random()
+        self._target_wpm = None
         self.stop_event = threading.Event()
         self.paused = threading.Event()
         self.thread = None
@@ -169,6 +183,12 @@ class Typist:
         self.error = ""
 
     def press(self, key):
+        if self.output is not None:       # typing straight into Word
+            if key == BACKSPACE:
+                self.output.backspace()
+            else:
+                self.output.type(key)
+            return
         if key == BACKSPACE:
             self.kb.tap(self.Key.backspace)
         elif key == "\n":
@@ -185,10 +205,34 @@ class Typist:
         self.mouse.click(self.Button.left, 1)
         time.sleep(0.35)  # let the app put its cursor there
 
-    def start(self, text, plan, countdown, jumps=None):
+    @property
+    def avg_wpm(self):
+        return average_speed(*self.wpm_range) if self.wpm_range else self.wpm
+
+    def _speed_now(self, key):
+        """The typing speed for this key. With a speed range, the speed wanders:
+        every few words it picks a new speed in the range and drifts towards it."""
+        if not self.wpm_range:
+            self.live_wpm = self.wpm
+            return self.wpm
+        lo, hi = sorted(self.wpm_range)
+        if self._target_wpm is None or not lo <= self.live_wpm <= hi:
+            self.live_wpm = self.rng.uniform(lo, hi)
+            self._target_wpm = self.rng.uniform(lo, hi)
+        if key == " " and self.rng.random() < 0.15:
+            # A new "mood": usually somewhere in the range, sometimes right at the edge.
+            self._target_wpm = self.rng.choice([lo, hi]) if self.rng.random() < 0.2 else self.rng.uniform(lo, hi)
+        self.live_wpm += (self._target_wpm - self.live_wpm) * 0.06
+        return self.live_wpm
+
+    def start(self, text, plan, countdown, jumps=None, output=None, corner_stop=True):
         """jumps: {step number: function} - each function runs just before that
-        step, to move Word's cursor into the right box."""
+        step, to move Word's cursor into the right box. output: where the keys
+        go (None = real key presses)."""
         self.jumps = jumps or {}
+        self.output = output
+        self.corner_stop = corner_stop
+        self._target_wpm = None
         self.stop_event.clear()
         self.paused.clear()
         self.done_chars = 0
@@ -209,7 +253,7 @@ class Typist:
         """Sleep, but wake early if stopped. Returns False when stopped."""
         end = time.monotonic() + max(0.0, seconds)
         while True:
-            if self._mouse_in_corner():
+            if self.corner_stop and self._mouse_in_corner():
                 self.stop_event.set()
             left = end - time.monotonic()
             if self.stop_event.wait(max(0.0, min(0.1, left))):
@@ -266,7 +310,7 @@ class Typist:
                         return
                     clock = time.monotonic()
 
-                char_seconds = 60.0 / (max(1.0, self.wpm) * CHARS_PER_WORD)
+                char_seconds = 60.0 / (max(1.0, self._speed_now(key)) * CHARS_PER_WORD)
                 clock += weight * per_weight * char_seconds
                 if not self._wait(clock - time.monotonic()):
                     self.state = "stopped"
@@ -389,7 +433,7 @@ on run argv
     set r to (item 3 of argv) as integer
     set c to (item 4 of argv) as integer
     tell application "Microsoft Word"
-        activate
+        if (item 5 of argv) is "front" then activate
         set theDoc to missing value
         repeat with d in documents
             if (name of d) is docName then set theDoc to contents of d
@@ -404,12 +448,14 @@ end run
 """
 
 
-def word_jump(doc_path, table, row, col):
-    """Move Word's cursor into a table cell, after any text already there."""
+def word_jump(doc_path, table, row, col, front=True):
+    """Move Word's cursor into a table cell, after any text already there.
+    front=False leaves Word in the background (for background typing)."""
     if IS_MAC:
         import subprocess
         result = subprocess.run(
-            ["osascript", "-e", _MAC_JUMP_SCRIPT, os.path.basename(doc_path), str(table), str(row), str(col)],
+            ["osascript", "-e", _MAC_JUMP_SCRIPT, os.path.basename(doc_path), str(table), str(row), str(col),
+             "front" if front else "back"],
             capture_output=True, text=True,
             timeout=120,  # the first time, the Mac waits while you answer "allow control of Word?"
         )
@@ -435,14 +481,82 @@ def word_jump(doc_path, table, row, col):
             cell_range = doc.Tables(table).Cell(row, col).Range
             cell_range.MoveEnd(1, -1)    # step back over the end-of-cell mark (1 = one character)
             cell_range.Collapse(0)       # 0 = put the cursor at the end
-            doc.Activate()
+            if front:
+                doc.Activate()
             cell_range.Select()
-            word.Activate()
+            if front:
+                word.Activate()
         except Exception as exc:
             raise RuntimeError(WORD_HELP_WIN + "Details: " + str(exc)) from exc
     else:
         raise RuntimeError("Jumping into Word works on Mac and Windows only.")
-    time.sleep(0.3)  # give Word a moment to come to the front
+    time.sleep(0.3 if front else 0.05)  # give Word a moment to come to the front
+
+
+class WordBackground:
+    """
+    Types straight into Word through Word's own scripting instead of pressing
+    real keys, so Word can stay in the background while you use other apps.
+    It types wherever Word's cursor is in the front document.
+
+    Make a new one for each run (on Windows it belongs to the thread that uses it).
+    """
+
+    def __init__(self, run_on_main=None):
+        # On a Mac, AppleScript has to run on the app's main thread.
+        self.run_on_main = run_on_main or (lambda fn: fn())
+        self._word = None
+
+    @staticmethod
+    def _quote(text):
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _mac(self, command):
+        script = 'tell application "Microsoft Word" to ' + command
+
+        def go():
+            from Foundation import NSAppleScript
+            result, error = NSAppleScript.alloc().initWithSource_(script).executeAndReturnError_(None)
+            if error is not None:
+                detail = error.get("NSAppleScriptErrorMessage", str(error)) if hasattr(error, "get") else str(error)
+                raise RuntimeError(WORD_HELP_MAC + "Details: " + str(detail))
+
+        self.run_on_main(go)
+
+    def _selection(self):
+        if self._word is None:
+            try:
+                import pythoncom
+                import win32com.client
+                pythoncom.CoInitialize()
+                self._word = win32com.client.GetActiveObject("Word.Application")
+            except Exception as exc:
+                raise RuntimeError(WORD_HELP_WIN + "Details: " + str(exc)) from exc
+        return self._word.Selection
+
+    def type(self, ch):
+        if IS_MAC:
+            if ch == "\n":
+                self._mac("type paragraph selection")
+            elif ch == "\t":
+                self._mac("type text selection text tab")
+            else:
+                self._mac("type text selection text " + self._quote(ch))
+        elif sys.platform == "win32":
+            if ch == "\n":
+                self._selection().TypeParagraph()
+            else:
+                self._selection().TypeText(ch)
+        else:
+            raise RuntimeError("Background typing works with Word on Mac and Windows only.")
+
+    def backspace(self):
+        if IS_MAC:
+            self._mac("type backspace selection")
+        elif sys.platform == "win32":
+            self._selection().TypeBackspace()
+        else:
+            raise RuntimeError("Background typing works with Word on Mac and Windows only.")
 
 
 # --------------------------------------------------------------------------- #
@@ -568,6 +682,10 @@ class App:
         self.pauses = tk.BooleanVar(value=True)
         self.delay = tk.IntVar(value=5)
         self.on_top = tk.BooleanVar(value=True)
+        self.random_speed = tk.BooleanVar(value=False)
+        self.wpm_lo = tk.IntVar(value=40)
+        self.wpm_hi = tk.IntVar(value=90)
+        self.background = tk.BooleanVar(value=False)
         self.box_mode = tk.StringVar(value="click")   # "click", "tab" or "word"
         self.word = None     # the connected Word document: {"path", "name", "cells"}
         self.jumper = word_jump
@@ -578,7 +696,8 @@ class App:
 
         self._build()
         self._start_hotkeys()
-        self.wpm.trace_add("write", lambda *_: self._on_settings())
+        for var in (self.wpm, self.random_speed, self.wpm_lo, self.wpm_hi):
+            var.trace_add("write", lambda *_: self._on_settings())
         self.box_mode.trace_add("write", lambda *_: self._on_mode_changed())
         self.on_top.trace_add("write", lambda *_: root.attributes("-topmost", self.on_top.get()))
         root.attributes("-topmost", True)
@@ -666,20 +785,29 @@ class App:
         speed = ttk.LabelFrame(bottom, text="Speed")
         speed.pack(fill="x", **pad)
         ttk.Label(speed, text="Words per minute").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Scale(speed, from_=5, to=200, variable=self.wpm, orient="horizontal",
-                  command=lambda v: self.wpm.set(int(float(v)))).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Spinbox(speed, from_=1, to=2000, textvariable=self.wpm, width=6).grid(row=0, column=2, padx=8)
+        self.wpm_scale = ttk.Scale(speed, from_=1, to=300, variable=self.wpm, orient="horizontal",
+                                   command=lambda v: self.wpm.set(int(float(v))))
+        self.wpm_scale.grid(row=0, column=1, sticky="ew", padx=8)
+        self.wpm_box = ttk.Spinbox(speed, from_=1, to=2000, textvariable=self.wpm, width=6)
+        self.wpm_box.grid(row=0, column=2, padx=8)
         presets = ttk.Frame(speed)
         presets.grid(row=1, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 6))
         for label, value in (("Slow 25", 25), ("Average 40", 40), ("Good 60", 60), ("Fast 90", 90), ("Pro 120", 120)):
             ttk.Button(presets, text=label, command=lambda v=value: self.wpm.set(v)).pack(side="left", padx=(0, 4))
+        rand = ttk.Frame(speed)
+        rand.grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 6))
+        ttk.Checkbutton(rand, text="Random speed between", variable=self.random_speed).pack(side="left")
+        ttk.Spinbox(rand, from_=1, to=2000, textvariable=self.wpm_lo, width=5).pack(side="left", padx=4)
+        ttk.Label(rand, text="and").pack(side="left")
+        ttk.Spinbox(rand, from_=1, to=2000, textvariable=self.wpm_hi, width=5).pack(side="left", padx=4)
+        ttk.Label(rand, text="WPM").pack(side="left")
         speed.columnconfigure(1, weight=1)
 
         # Human touches
         human = ttk.LabelFrame(bottom, text="Make it look human")
         human.pack(fill="x", **pad)
         ttk.Label(human, text="Rhythm variation").grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        ttk.Scale(human, from_=0, to=80, variable=self.variation, orient="horizontal",
+        ttk.Scale(human, from_=0, to=100, variable=self.variation, orient="horizontal",
                   command=lambda v: self.variation.set(int(float(v)))).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Label(human, textvariable=self.variation, width=4).grid(row=0, column=2)
         ttk.Label(human, text="Typos (fixed with backspace), % of letters").grid(row=1, column=0, sticky="w", padx=8, pady=4)
@@ -696,6 +824,12 @@ class App:
         ttk.Label(opts, text="Seconds to click into Word:").pack(side="left")
         ttk.Spinbox(opts, from_=1, to=60, textvariable=self.delay, width=4).pack(side="left", padx=6)
         ttk.Checkbutton(opts, text="Keep this window on top", variable=self.on_top).pack(side="right")
+        bg = ttk.Frame(bottom)
+        bg.pack(fill="x", padx=12, pady=(0, 4))
+        self.bg_check = ttk.Checkbutton(
+            bg, text="Type in the background (Word only: keep using your computer while it types)",
+            variable=self.background, state="normal" if (IS_MAC or sys.platform == "win32") else "disabled")
+        self.bg_check.pack(side="left")
 
         # Controls
         ctl = ttk.Frame(bottom)
@@ -1006,7 +1140,7 @@ class App:
         done = sum(1 for b in filled if b["done"])
         words = sum(len(self._box_text(b).split()) for b in filled)
         chars = sum(len(self._box_text(b)) for b in filled)
-        wpm = max(1, self._safe_int(self.wpm, 60))
+        wpm = self._avg_wpm()
         self.box_info.set(f"{len(filled)} boxes · {done} done · {words} words · "
                           f"about {format_duration(seconds_for(' ' * chars, wpm))} in all")
 
@@ -1060,16 +1194,32 @@ class App:
             self.text.edit_modified(False)
             self._update_info()
 
+    def _speed_range(self):
+        """(slowest, fastest) when Random speed is on, otherwise None."""
+        if not self.random_speed.get():
+            return None
+        lo = max(1, self._safe_int(self.wpm_lo, 40))
+        hi = max(1, self._safe_int(self.wpm_hi, 90))
+        return (min(lo, hi), max(lo, hi))
+
+    def _avg_wpm(self):
+        r = self._speed_range()
+        return average_speed(*r) if r else max(1, self._safe_int(self.wpm, 60))
+
     def _on_settings(self):
         if self.typist is not None:
             self.typist.wpm = max(1, self._safe_int(self.wpm, 60))
+            self.typist.wpm_range = self._speed_range()
+        state = "disabled" if self.random_speed.get() else "normal"
+        for w in (self.wpm_scale, self.wpm_box):
+            w.configure(state=state)
         self._update_info()
         self._refresh_boxes()
 
     def _update_info(self):
         text = self._get_text()
         words = len(text.split())
-        wpm = max(1, self._safe_int(self.wpm, 60))
+        wpm = self._avg_wpm()
         self.info.set(f"{words} words · {len(text)} characters · about {format_duration(seconds_for(text, wpm))}")
 
     # ----- actions -----
@@ -1080,6 +1230,8 @@ class App:
             return False
         if self.typist.busy:
             return False
+        if self.background.get():
+            return True   # no real key presses, so the Mac's key permission isn't needed
         problem = mac_permission_problem()
         if problem:
             self.status.set(problem.split("\n")[0])
@@ -1097,15 +1249,56 @@ class App:
 
     def _begin(self, text, run, countdown=None, plan=None, jumps=None):
         plan = plan if plan is not None else self._plan(text)
+        bg = self.background.get()
+        run["background"] = bg
         self.run = run
         self.typist.wpm = max(1, self._safe_int(self.wpm, 60))
-        self.typist.start(text, plan, countdown or max(1, self._safe_int(self.delay, 5)), jumps)
+        self.typist.wpm_range = self._speed_range()
+        self.typist.start(
+            text, plan,
+            (countdown or 2) if bg else (countdown or max(1, self._safe_int(self.delay, 5))),
+            jumps,
+            output=WordBackground(self._on_main) if bg else None,
+            corner_stop=not bg,   # you're using the mouse yourself, so no corner stop
+        )
         self.start_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
         self.stop_btn.configure(state="normal")
         self._refresh_boxes()
 
+    def _on_main(self, fn):
+        """Run fn on the window's thread and wait for it (AppleScript needs this on a Mac)."""
+        if threading.current_thread() is threading.main_thread():
+            return fn()
+        box, done = {}, threading.Event()
+
+        def go():
+            try:
+                box["result"] = fn()
+            except Exception as exc:
+                box["error"] = exc
+            done.set()
+
+        self.root.after(0, go)
+        if not done.wait(130):
+            raise RuntimeError("Word didn't answer.")
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+    def _background_ok(self):
+        """Background typing only works where Word can be told what to type."""
+        if not self.background.get():
+            return True
+        if self._on_boxes_tab() and self.box_mode.get() != "word":
+            self.status.set("Background typing works on the Text tab, and on the Boxes tab with 'Word cells'. "
+                            "Turn off 'Type in the background' to use the other ways.")
+            return False
+        return True
+
     def _start(self, countdown=None):
+        if not self._background_ok():
+            return
         if self._on_boxes_tab():
             if self.box_mode.get() == "word":
                 self._type_into_word()
@@ -1128,6 +1321,8 @@ class App:
             self._begin(text, {"kind": "text"}, countdown)
 
     def _type_box(self, entry, countdown=None):
+        if not self._background_ok():
+            return
         text = self._box_text(entry)
         if not text.strip():
             self.status.set("That box is empty.")
@@ -1212,7 +1407,8 @@ class App:
             if cell["text"]:
                 # The cell already has words in it, like "Name:" - don't glue onto them.
                 text = (" " if cell["text"].endswith(":") else "\n") + text
-            jumps[len(plan)] = (lambda c=cell: self.jumper(path, c["table"], c["row"], c["col"]))
+            front = not self.background.get()
+            jumps[len(plan)] = (lambda c=cell: self.jumper(path, c["table"], c["row"], c["col"], front=front))
             plan += self._plan(text)
             pos += len(text)
             bounds.append((b, pos))
@@ -1247,6 +1443,8 @@ class App:
             return
 
         def on_press(key):
+            if self.run and self.run.get("background"):
+                return   # you're typing in other apps; those keys aren't for us
             if key == keyboard.Key.esc and self.typist.busy:
                 self.root.after(0, self._stop)
             elif key == keyboard.Key.f8:
@@ -1296,12 +1494,22 @@ class App:
                                 f"{STOP_HINT}.")
             elif state == "countdown" and run_kind == "word":
                 self.status.set(f"Switching to Word in {t.countdown_left}… hands off the keyboard and mouse.")
+            elif state == "countdown" and self.run and self.run.get("background"):
+                self.status.set(f"Typing into Word in the background in {t.countdown_left}… "
+                                "you can switch to other apps.")
             elif state == "countdown":
                 self.status.set(f"Click inside your Word document now… starting in {t.countdown_left}")
             elif state == "typing":
-                left = seconds_for(" " * (t.total_chars - t.done_chars), t.wpm)
-                self.status.set(f"Typing at {int(t.wpm)} WPM… {t.done_chars}/{t.total_chars} characters, "
-                                f"about {format_duration(left)} left.  {STOP_HINT}.")
+                left = seconds_for(" " * (t.total_chars - t.done_chars), t.avg_wpm)
+                speed = f"{int(t.live_wpm)} WPM" + (f" (random {t.wpm_range[0]}–{t.wpm_range[1]})"
+                                                   if t.wpm_range else "")
+                if self.run and self.run.get("background"):
+                    self.status.set(f"Typing into Word in the background at {speed}… "
+                                    f"{t.done_chars}/{t.total_chars} characters, about {format_duration(left)} "
+                                    "left. Press Stop here to stop.")
+                else:
+                    self.status.set(f"Typing at {speed}… {t.done_chars}/{t.total_chars} characters, "
+                                    f"about {format_duration(left)} left.  {STOP_HINT}.")
             elif state == "paused":
                 self.status.set("Paused. Press Resume, then click back into Word.")
             elif state == "done" and run_kind == "box":

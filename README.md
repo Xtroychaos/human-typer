@@ -7,8 +7,12 @@ the text out key by key, like a person would.
 
 ## What it does
 
-- **Any speed you like.** Use the slider (5–200 WPM), type a number into the box (up to 2000), or press a preset
+- **Any speed you like.** Use the slider (1–300 WPM), type a number into the box (up to 2000), or press a preset
   (25, 40, 60, 90 or 120). You can change the speed **while it's typing** and it speeds up or slows down straight away.
+- **Random speed.** Tick **Random speed between** and pick two speeds, like 40 and 90. While it types, the speed keeps
+  wandering between them: it speeds up for a few words, slows down, and now and then hits the very slowest or fastest.
+- **Type in the background.** With Word, it can type while you keep using your computer. See
+  [Typing in the background](#typing-in-the-background).
 - **Human rhythm.** Keys don't come at a perfectly even beat. It slows down between words, stops for a breath after
   commas and full stops, waits a bit longer at new lines, and sometimes stops to "think".
 - **Typos it fixes itself.** It sometimes hits a key next to the right one, notices, presses Backspace, and types
@@ -127,6 +131,24 @@ Good to know:
   clicked Don't Allow, turn it on in **System Settings → Privacy & Security → Automation → Human Typer → Microsoft Word**.
 - **Windows:** if Word shows a yellow **Protected View** bar, click **Enable Editing** first.
 - Text boxes and blank lines can't be picked this way. For those, use **I click each one**.
+
+## Typing in the background
+
+Normally Human Typer presses real keys, so Word has to stay in front and you can't touch the keyboard or mouse. Tick
+**Type in the background** and it tells Word what to type directly instead. Word fills in live while you switch to other
+apps, browse, or type somewhere else.
+
+- **Text tab:** click in Word where the text should go, come back to Human Typer, and press **Start typing**. It types
+  at Word's cursor, in the document at the front of Word.
+- **Boxes tab:** works with **Word cells** (connect your document first). It moves Word's cursor into each cell without
+  bringing Word to the front.
+- It doesn't work with **I click**, **Auto-click my spots** or **Press Tab**, because those need real clicks and key
+  presses. Turn the tick off to use them.
+- Stop it with the **Stop** button. The mouse-corner stop and the F8/Esc keys are off in this mode, since you're using
+  the mouse and keyboard yourself.
+- **Mac:** the first time, click **OK** when the Mac asks to let Human Typer control Microsoft Word (or turn it on in
+  **System Settings → Privacy & Security → Automation**). The Accessibility permission isn't needed for this mode.
+- Avoid clicking around inside the same Word document while it types, or the text follows your cursor.
 
 ## Tips for Word
 
