@@ -152,10 +152,11 @@ class Typist:
     def __init__(self):
         # Imported here so a missing library shows as a message in the app.
         from pynput.keyboard import Controller, Key
-        from pynput.mouse import Controller as Mouse
+        from pynput.mouse import Button, Controller as Mouse
         self.kb = Controller()
         self.Key = Key
         self.mouse = Mouse()
+        self.Button = Button
         self.wpm = 60.0
         self.stop_event = threading.Event()
         self.paused = threading.Event()
@@ -176,6 +177,13 @@ class Typist:
             self.kb.tap(self.Key.tab)
         else:
             self.kb.type(key)
+
+    def click_at(self, x, y):
+        """Move the mouse to a spot on the screen and click there."""
+        self.mouse.position = (x, y)
+        time.sleep(0.15)
+        self.mouse.click(self.Button.left, 1)
+        time.sleep(0.35)  # let the app put its cursor there
 
     def start(self, text, plan, countdown, jumps=None):
         """jumps: {step number: function} - each function runs just before that
@@ -246,7 +254,7 @@ class Typist:
                         self.state = "stopped"
                         return
                     self.state = "typing"
-                    if jump:
+                    if jump and getattr(jump, "again_after_pause", True):
                         jump()  # back into the same box, right after what's typed so far
                     clock = time.monotonic()
 
@@ -571,7 +579,7 @@ class App:
         self._build()
         self._start_hotkeys()
         self.wpm.trace_add("write", lambda *_: self._on_settings())
-        self.box_mode.trace_add("write", lambda *_: self._refresh_boxes())
+        self.box_mode.trace_add("write", lambda *_: self._on_mode_changed())
         self.on_top.trace_add("write", lambda *_: root.attributes("-topmost", self.on_top.get()))
         root.attributes("-topmost", True)
         self._add_box()
@@ -635,14 +643,16 @@ class App:
 
         mode = ttk.Frame(grid)
         mode.pack(fill="x", pady=(6, 4))
-        ttk.Label(mode, text="Going to the next box:").pack(side="left")
-        ttk.Radiobutton(mode, text="I click each one", value="click",
-                        variable=self.box_mode).pack(side="left", padx=(8, 4))
-        ttk.Radiobutton(mode, text="Press Tab (Word table)", value="tab",
-                        variable=self.box_mode).pack(side="left", padx=4)
-        self.word_radio = ttk.Radiobutton(mode, text="Jump to my Word cells", value="word",
+        ttk.Label(mode, text="Getting to each box:").pack(side="left")
+        ttk.Radiobutton(mode, text="I click", value="click",
+                        variable=self.box_mode).pack(side="left", padx=(6, 2))
+        ttk.Radiobutton(mode, text="Auto-click my spots", value="spot",
+                        variable=self.box_mode).pack(side="left", padx=2)
+        ttk.Radiobutton(mode, text="Press Tab", value="tab",
+                        variable=self.box_mode).pack(side="left", padx=2)
+        self.word_radio = ttk.Radiobutton(mode, text="Word cells", value="word",
                                           variable=self.box_mode, state="disabled")
-        self.word_radio.pack(side="left", padx=4)
+        self.word_radio.pack(side="left", padx=2)
 
         self.box_info = tk.StringVar()
         ttk.Label(grid, textvariable=self.box_info, foreground="#555").pack(side="bottom", anchor="w", pady=(4, 0))
@@ -713,7 +723,7 @@ class App:
         title.pack(side="left")
         status = tk.StringVar()
         ttk.Label(head, textvariable=status).pack(side="left", padx=8)
-        entry = {"card": card, "title": title, "status": status, "done": False, "target": None}
+        entry = {"card": card, "title": title, "status": status, "done": False, "target": None, "spot": None}
         ttk.Button(head, text="✕", width=3, command=lambda: self._remove_box(entry)).pack(side="right")
         ttk.Button(head, text="Type this", command=lambda: self._type_box(entry)).pack(side="right", padx=4)
         body = tk.Text(card, wrap="word", undo=True, height=4, font=("", 13 if IS_MAC else 10))
@@ -730,7 +740,14 @@ class App:
         combo.pack(side="left", fill="x", expand=True, padx=(4, 0))
         combo.bind("<<ComboboxSelected>>", lambda e: self._on_target_picked(entry))
         entry["where"], entry["combo"] = where, combo
-        self._show_target(entry)
+        # Where to click on the screen before typing this box.
+        spot_row = ttk.Frame(card)
+        ttk.Button(spot_row, text="Set spot", command=lambda: self._set_spot(entry)).pack(side="left")
+        ttk.Button(spot_row, text="Show", width=6, command=lambda: self._show_spot(entry)).pack(side="left", padx=4)
+        entry["spot_var"] = tk.StringVar(value="No spot yet")
+        ttk.Label(spot_row, textvariable=entry["spot_var"], foreground="#555").pack(side="left", padx=4)
+        entry["spot_row"] = spot_row
+        self._show_rows(entry)
         self.boxes.append(entry)
         self._layout_boxes(force=True)
         if focus:
@@ -773,9 +790,10 @@ class App:
         for b in self.boxes:
             b["combo"].configure(values=self.word["labels"])
             b["target"] = None
-            self._show_target(b)
         self._fill_in_order()
         self.box_mode.set("word")
+        for b in self.boxes:
+            self._show_rows(b)
         if open_it:
             try:
                 open_in_word(self.word["path"])
@@ -818,13 +836,71 @@ class App:
         except Exception:
             pass
 
-    def _show_target(self, entry):
-        if self.word:
+    def _show_rows(self, entry):
+        """Show the 'Goes in:' row in Word mode and the spot row in spot mode."""
+        mode = self.box_mode.get()
+        if self.word and mode == "word":
             entry["where"].pack(fill="x", pady=(4, 0))
             if entry["target"] is None and not entry["combo"].get():
                 self._set_target(entry, None)
         else:
             entry["where"].pack_forget()
+        if mode == "spot":
+            entry["spot_row"].pack(fill="x", pady=(4, 0))
+        else:
+            entry["spot_row"].pack_forget()
+
+    def _on_mode_changed(self):
+        for b in self.boxes:
+            self._show_rows(b)
+        self._refresh_boxes()
+
+    # ----- click spots -----
+    def _set_spot(self, entry, seconds=4):
+        """Hide the window, wait while you point at the spot, then remember it."""
+        if self.typist is None:
+            self.status.set(self.typist_error)
+            return
+        if self.typist.busy:
+            return
+        n = self.boxes.index(entry) + 1
+        self.root.iconify()
+        toast = None
+        try:  # a little countdown at the top of the screen
+            toast = tk.Toplevel(self.root)
+            toast.overrideredirect(True)
+            toast.attributes("-topmost", True)
+            label = tk.Label(toast, font=("", 16, "bold"), bg="#1f2937", fg="white", padx=18, pady=10)
+            label.pack()
+            toast.update_idletasks()
+            toast.geometry(f"+{max(0, self.root.winfo_screenwidth() // 2 - 260)}+30")
+        except Exception:
+            toast, label = None, None
+
+        def tick(left):
+            if label is not None:
+                label.configure(text=f"Box {n}: point the mouse where it should type…  {left}")
+            if left > 0:
+                self.root.after(1000, tick, left - 1)
+                return
+            x, y = self.typist.mouse.position
+            entry["spot"] = (int(x), int(y))
+            entry["spot_var"].set("✓ Spot set")
+            if toast is not None:
+                toast.destroy()
+            self.root.deiconify()
+            self.root.lift()
+            self.status.set(f"Box {n} will be typed where the mouse was. Press Show to check it.")
+            self._refresh_boxes()
+
+        tick(seconds)
+
+    def _show_spot(self, entry):
+        """Move the mouse to the box's spot (without clicking) so you can check it."""
+        if self.typist is None or entry["spot"] is None:
+            self.status.set("Press Set spot first.")
+            return
+        self.typist.mouse.position = entry["spot"]
 
     def _on_box_changed(self, body):
         if body.edit_modified():
@@ -851,11 +927,15 @@ class App:
         if not parts:
             self.status.set("There was no text to split.")
             return
+        spots = [b["spot"] for b in self.boxes]
         for b in self.boxes:
             b["card"].destroy()
         self.boxes = []
-        for part in parts:
+        for i, part in enumerate(parts):
             self._add_box(part)
+            if i < len(spots) and spots[i]:   # box 1 keeps box 1's spot, and so on
+                self.boxes[-1]["spot"] = spots[i]
+                self.boxes[-1]["spot_var"].set("✓ Spot set")
         self.box_area.canvas.yview_moveto(0)
         if self.word:
             self._fill_in_order()
@@ -915,6 +995,8 @@ class App:
                 colour, label = BOX_NEXT, "▶ Next"
             elif mode == "word" and b["target"] is None and self._box_text(b).strip():
                 colour, label = BOX_IDLE, "(skipped)"
+            elif mode == "spot" and b["spot"] is None and self._box_text(b).strip():
+                colour, label = BOX_IDLE, "(no spot)"
             else:
                 colour, label = BOX_IDLE, ""
             b["card"].configure(highlightbackground=colour, highlightcolor=colour)
@@ -932,6 +1014,9 @@ class App:
             if mode == "word":
                 n = sum(1 for b in self.boxes if b["target"] and self._box_text(b).strip())
                 text = f"▶  Type into Word ({n} box{'' if n == 1 else 'es'})"
+            elif mode == "spot":
+                n = sum(1 for b in self.boxes if b["spot"] and self._box_text(b).strip())
+                text = f"▶  Click & type ({n} box{'' if n == 1 else 'es'})"
             elif mode == "tab":
                 text = "▶  Type all boxes"
             elif nxt is not None:
@@ -1024,6 +1109,8 @@ class App:
         if self._on_boxes_tab():
             if self.box_mode.get() == "word":
                 self._type_into_word()
+            elif self.box_mode.get() == "spot":
+                self._type_spots()
             elif self.box_mode.get() == "tab":
                 self._type_all_boxes()
             else:
@@ -1044,6 +1131,12 @@ class App:
         text = self._box_text(entry)
         if not text.strip():
             self.status.set("That box is empty.")
+            return
+        if self.box_mode.get() == "spot":
+            if entry["spot"] is None:
+                self.status.set("Set a spot for that box first (Set spot).")
+                return
+            self._type_spots([entry])
             return
         if self.box_mode.get() == "word" and self.word:
             if entry["target"] is None:
@@ -1071,6 +1164,33 @@ class App:
         for b in todo:
             b["done"] = False
         self._begin("\t".join(texts), {"kind": "tab", "bounds": bounds, "current": todo[0]})
+
+    def _type_spots(self, todo=None):
+        """Click each box's spot on the screen and type the box there."""
+        if todo is None:
+            todo = [b for b in self.boxes if b["spot"] and self._box_text(b).strip()]
+        if not todo:
+            self.status.set("No box has a spot yet. Press Set spot on a box first.")
+            return
+        if not self._ready():
+            return
+        plan, jumps, bounds, texts, pos = [], {}, [], [], 0
+        for b in todo:
+            text = self._box_text(b)
+            click = (lambda xy=b["spot"]: self.typist.click_at(*xy))
+            # After a pause, clicking the spot again would land in the middle of
+            # what's already typed, so then you click back in yourself.
+            click.again_after_pause = False
+            jumps[len(plan)] = click
+            plan += self._plan(text)
+            pos += len(text)
+            bounds.append((b, pos))
+            texts.append(text)
+            b["done"] = False
+        self._begin("".join(texts), {"kind": "spot", "bounds": bounds, "current": todo[0]},
+                    countdown=3, plan=plan, jumps=jumps)
+        # Get this window out of the way, so it can't cover a spot.
+        self.root.after(200, self.root.iconify)
 
     def _type_into_word(self, todo=None):
         """Jump into each box's Word cell and type it there."""
@@ -1146,7 +1266,7 @@ class App:
         run = self.run
         if run is None:
             return
-        if run["kind"] in ("tab", "word"):
+        if run["kind"] in ("tab", "word", "spot"):
             current = None
             for b, end in run["bounds"]:
                 if t.done_chars >= end:
@@ -1157,6 +1277,9 @@ class App:
         elif run["kind"] == "box" and t.state == "done":
             run["box"]["done"] = True
         if not t.busy:
+            if run["kind"] == "spot":
+                self.root.deiconify()   # bring the window back when it's finished
+                self.root.lift()
             self.run = None
         self._refresh_boxes()
 
@@ -1168,7 +1291,10 @@ class App:
             run_kind = self.run["kind"] if self.run else None
             self._track_run(t)
             state = t.state
-            if state == "countdown" and run_kind == "word":
+            if state == "countdown" and run_kind == "spot":
+                self.status.set(f"Clicking your spots in {t.countdown_left}… hands off the keyboard and mouse. "
+                                f"{STOP_HINT}.")
+            elif state == "countdown" and run_kind == "word":
                 self.status.set(f"Switching to Word in {t.countdown_left}… hands off the keyboard and mouse.")
             elif state == "countdown":
                 self.status.set(f"Click inside your Word document now… starting in {t.countdown_left}")

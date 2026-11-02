@@ -17,6 +17,7 @@ the text out key by key, like a person would.
   (one "word" = 5 characters, the same rule typing tests use).
 - **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your
   document, or fill a Word table cell by cell. See [Boxes](#boxes-one-paragraph-per-box).
+- **Auto-click spots.** Show it where each box goes on your screen, and it clicks there and types that box.
 - **Connect a Word document.** Pick your worksheet, choose which table cell each paragraph goes in, and it jumps into
   each cell and types there. See [Connect a Word document](#connect-a-word-document-and-pick-the-cells).
 - **Pause and stop.** Push the mouse into the **top-left corner** of the screen to stop, on any computer. On Windows,
@@ -89,6 +90,12 @@ boxes, or the cells of a table.
    - **I click into each box myself.** For text boxes or spaces spread around the page. Press **Type next box**, click
      into the matching spot in Word, and it types that box. Done boxes turn green with a ✓ and the next one turns blue.
      On Windows, you can instead click into the spot in Word and press **F9**, and it starts straight away.
+   - **Auto-click my spots.** Works anywhere: Word text boxes, tables, Google Docs, websites. On each box, press
+     **Set spot**. Human Typer hides, and you have 4 seconds to point the mouse at the place where that box should be
+     typed (just point, don't click). Press **Show** to check a spot: the mouse jumps there. Then press
+     **Click & type**: Human Typer gets out of the way, clicks each spot and types its box there, then comes back when
+     it's done. Don't move the Word window or scroll the page after setting the spots, or the spots won't line up
+     anymore. To stop, push the mouse into the top-left corner of the screen.
    - **Press Tab (for a table in Word).** Click into the first cell of the table and press **Type all boxes**. It types
      box 1, presses Tab to jump to the next cell, types box 2, and so on. (In the last cell of a Word table, Tab adds a
      new row.)
