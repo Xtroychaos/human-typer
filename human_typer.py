@@ -441,30 +441,53 @@ def word_jump(doc_path, table, row, col):
 #  Mac permission
 # --------------------------------------------------------------------------- #
 
+_APP_NAME_IN_LIST = "Human Typer" if getattr(sys, "frozen", False) else "Terminal (or the app you started Human Typer from)"
+
 MAC_PERMISSION_HELP = (
-    "Your Mac needs to let this app press keys.\n\n"
-    "1. Open System Settings > Privacy & Security > Accessibility.\n"
-    + ("2. Turn on Human Typer (click + and pick it from Applications if it isn't listed).\n"
-       if getattr(sys, "frozen", False) else
-       "2. Turn on Terminal (or the app you started Human Typer from).\n") +
-    "3. Close Human Typer and open it again."
+    "Your Mac needs to let Human Typer press keys.\n\n"
+    "1. Quit Human Typer (Cmd+Q).\n"
+    "2. Open System Settings > Privacy & Security > Accessibility.\n"
+    f"3. If {_APP_NAME_IN_LIST} is in the list, click it and press the – button to remove it, "
+    "even if its switch is on. (After a new download the old switch no longer counts.)\n"
+    "4. Open Human Typer again and press Start. When the Mac asks, click Open System Settings "
+    f"and turn on {_APP_NAME_IN_LIST}.\n"
+    "5. Quit Human Typer (Cmd+Q) and open it one more time."
 )
 
+MAC_MOVE_HELP = (
+    "Please move Human Typer into your Applications folder first.\n\n"
+    "It's running from Downloads, so the Mac can't remember its permission and keeps asking.\n\n"
+    "1. Quit Human Typer (Cmd+Q).\n"
+    "2. Drag Human Typer from Downloads into Applications.\n"
+    "3. Open it from Applications."
+)
 
-def mac_can_type():
-    """On a Mac, check that we're allowed to press keys, and ask for it if not.
-    Without this permission the Mac silently ignores every key press."""
+_asked_mac = False
+
+
+def mac_permission_problem():
+    """
+    On a Mac, check that we're allowed to press keys. Without this permission
+    the Mac silently ignores every key press. Returns None when all is well,
+    or a message saying what to do.
+    """
+    global _asked_mac
     if not IS_MAC:
-        return True
+        return None
     try:
         import HIServices  # comes with pynput on Mac
         if HIServices.AXIsProcessTrusted():
-            return True
-        # Opens the Mac's own "allow access" prompt.
-        HIServices.AXIsProcessTrustedWithOptions({HIServices.kAXTrustedCheckOptionPrompt: True})
-        return False
+            return None
+        exe = sys.executable
+        if getattr(sys, "frozen", False) and ("/AppTranslocation/" in exe or "/Downloads/" in exe):
+            return MAC_MOVE_HELP
+        if not _asked_mac:
+            # Show the Mac's own "allow access" prompt, but only once, so it doesn't nag.
+            _asked_mac = True
+            HIServices.AXIsProcessTrustedWithOptions({HIServices.kAXTrustedCheckOptionPrompt: True})
+        return MAC_PERMISSION_HELP
     except Exception:
-        return True  # can't check, so just try
+        return None  # can't check, so just try
 
 
 # --------------------------------------------------------------------------- #
@@ -972,9 +995,10 @@ class App:
             return False
         if self.typist.busy:
             return False
-        if not mac_can_type():
-            self.status.set(MAC_PERMISSION_HELP)
-            messagebox.showinfo(APP_NAME, MAC_PERMISSION_HELP)
+        problem = mac_permission_problem()
+        if problem:
+            self.status.set(problem.split("\n")[0])
+            messagebox.showinfo(APP_NAME, problem)
             return False
         return True
 
