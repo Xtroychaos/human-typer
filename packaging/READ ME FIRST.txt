@@ -1,0 +1,21 @@
+HUMAN TYPER - how to open it
+============================
+
+1. Make sure you've EXTRACTED this zip first:
+   right-click the zip > Extract All... > Extract.
+   (Opening the app straight from inside the zip won't work properly.)
+
+2. Double-click "Human Typer.exe".
+
+3. If Windows says "Windows protected your PC":
+   click "More info", then "Run anyway".
+   (It says this because the app isn't registered with Microsoft.)
+
+4. If your antivirus blocks it, allow it.
+   Some antivirus programs distrust any app that types for you.
+
+5. In Word, if you see a yellow "Protected View" bar, click "Enable Editing".
+
+How to use it: paste your text, pick a speed, press Start,
+then click into your Word document before the countdown ends.
+To stop: push the mouse into the top-left corner of the screen, or press Esc.
