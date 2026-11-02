@@ -53,7 +53,11 @@ You don't need to install anything else.
 4. **To stop on a Mac:** push the mouse into the **top-left corner** of the screen, or press the **Stop** button. (The
    F8 and Esc shortcuts are Windows-only, because on a Mac they can make the window crash.)
 
-When you download a newer version, you may need to turn Human Typer off and on again in the Accessibility list.
+**If the Mac keeps asking for permission even though Human Typer is switched on:** every new download counts as a
+new app to your Mac, so the old switch no longer works. Quit Human Typer (**Cmd+Q**), go to
+**System Settings → Privacy & Security → Accessibility**, click **Human Typer** and press the **–** button to remove it
+(remove every copy). Make sure the app is in **Applications**, not Downloads. Then open it, press Start, turn it on when
+asked, and quit and reopen it once more.
 
 ### First time on Windows
 
