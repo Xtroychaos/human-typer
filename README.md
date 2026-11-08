@@ -236,16 +236,25 @@ private like a password. The app uses Claude Opus 5.5.
 
 ## Themes
 
-Pick a look from the **Themes** menu (in the menu bar, or **🎨 Theme** at the top right of the clean themes):
+Pick a look from the **Themes** menu (in the menu bar, or the **🎨 Theme** button at the top right of the clean
+themes):
 
 - **Classic** – the original look, exactly as before.
-- **Clean Light**, **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal, with
-  animations: the window fades in, the tab underline slides, buttons fade on hover, highlights fade in, box borders
-  fade to their new colour, the progress bar glides, messages type themselves out, a ✓ message slides up when
-  something finishes, the Start button pulses during the countdown, and switching themes fades over.
-  **Speed** and **Make it look human** fold open and shut (click the heading) to save space.
+- **Clean Light**, **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal:
+  - **No square corners:** rounded buttons, text boxes, fields, cards, scrollbars and sliders, round radio buttons
+    and rounded checkboxes with a tick.
+  - **A progress ring** instead of a straight bar: it fills up with the percentage in the middle, and spins during
+    the countdown (with the seconds left) and while a rewrite is being written.
+  - **The window's title bar** (where close and minimise are) takes the theme's colour on Windows 11, and goes
+    dark or light to match on Windows 10 and Mac. The menu strip is tucked away (the 🎨 button has it).
+  - **Animations:** the window fades in and fades out when you close it; switching themes fades over; the tab
+    underline slides; buttons fade on hover; text boxes glow while you type in them; text the app fills in types
+    itself in; highlights and box borders fade; messages type themselves out; a ✓ message slides up when something
+    finishes; the Start button pulses during the countdown.
+  - **Speed** and **Make it look human** start folded, with a summary in the heading (like "Speed · 60 WPM").
+    Click a heading to open it.
 
-Untick **Animations** in the Themes menu to keep a clean theme but turn the motion off. Your choice is remembered.
+Untick **Animations** in the Themes menu to keep a clean theme without the motion. Your choice is remembered.
 
 ## Tips for Word
 

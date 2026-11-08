@@ -1796,6 +1796,62 @@ def _rgb(c):
     return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
 
 
+# --------------------------------------------------------------------------- #
+#  Rounded shapes for the clean themes. Tk only draws rectangles, so the
+#  rounded buttons, fields and cards are small images painted here (with
+#  smoothed edges), which Tk stretches to any size.
+# --------------------------------------------------------------------------- #
+
+def _sdf_rrect(px, py, x0, y0, x1, y1, r):
+    """Distance from a point to a rounded rectangle's edge (negative inside)."""
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    hx, hy = (x1 - x0) / 2 - r, (y1 - y0) / 2 - r
+    qx, qy = abs(px - cx) - hx, abs(py - cy) - hy
+    return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r
+
+
+def _sdf_segments(px, py, pts, half):
+    best = 1e9
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dx, dy = bx - ax, by - ay
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy or 1)))
+        best = min(best, math.hypot(px - ax - t * dx, py - ay - t * dy))
+    return best - half
+
+
+def paint_image(w, h, layers, bg):
+    """A w x h image: each layer is (distance function, colour), painted bottom
+    to top over the background colour, with soft edges."""
+    base = _rgb(bg)
+    cols = [(fn, _rgb(c)) for fn, c in layers]
+    rows = []
+    for y in range(h):
+        row = []
+        for x in range(w):
+            px, py = x + 0.5, y + 0.5
+            r, g, b = base
+            for fn, (cr, cg, cb) in cols:
+                a = 0.5 - fn(px, py)
+                if a > 0:
+                    a = min(1.0, a)
+                    r, g, b = r + (cr - r) * a, g + (cg - g) * a, b + (cb - b) * a
+            row.append("#%02x%02x%02x" % (round(r), round(g), round(b)))
+        rows.append("{" + " ".join(row) + "}")
+    img = tk.PhotoImage(width=w, height=h)
+    img.put(" ".join(rows))
+    return img
+
+
+def rounded_box(r, fill, border, bg, bw=1.0, size=None):
+    """A rounded rectangle image for 9-slice stretching (corners of radius r)."""
+    s = size or 2 * r + 4
+    layers = [(lambda x, y: _sdf_rrect(x, y, 0.5, 0.5, s - 0.5, s - 0.5, r), border)]
+    if bw > 0:
+        layers.append((lambda x, y: _sdf_rrect(x, y, 0.5 + bw, 0.5 + bw, s - 0.5 - bw, s - 0.5 - bw,
+                                               max(1, r - bw)), fill))
+    return paint_image(s, s, layers, bg)
+
+
 def mix(c1, c2, t):
     """A colour part-way (t from 0 to 1) between two colours."""
     a, b = _rgb(c1), _rgb(c2)
@@ -1860,6 +1916,8 @@ class App:
         self._start_hotkeys()
         for var in (self.wpm, self.random_speed, self.wpm_lo, self.wpm_hi):
             var.trace_add("write", lambda *_: self._on_settings())
+        for var in (self.typos, self.variation, self.typo_targets):
+            var.trace_add("write", lambda *_: self._section_heads())
         self.box_mode.trace_add("write", lambda *_: self._on_mode_changed())
         self.on_top.trace_add("write", lambda *_: root.attributes("-topmost", self.on_top.get()))
         root.attributes("-topmost", True)
@@ -1889,7 +1947,7 @@ class App:
         one = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(one, text="  Text  ")
         ttk.Label(one, text="Paste the text you want typed:", font=("", 11, "bold")).pack(anchor="w", pady=(0, 4))
-        box = ttk.Frame(one)
+        box = self.text_card = ttk.Frame(one)
         box.pack(fill="both", expand=True)
         self.text = tk.Text(box, wrap="word", undo=True, height=6, font=font)
         scroll = ttk.Scrollbar(box, command=self.text.yview)
@@ -2013,8 +2071,9 @@ class App:
             state="normal" if self.background.get() else "disabled"))
 
         # Controls
-        ctl = ttk.Frame(bottom)
+        ctl = self.ctl = ttk.Frame(bottom)
         ctl.pack(fill="x", **pad)
+        self.ring = tk.Canvas(ctl, width=46, height=46, highlightthickness=0, bd=0)  # progress ring (clean themes)
         self.start_btn = ttk.Button(ctl, text="▶  Start typing", command=self._start)
         self.start_btn.pack(side="left")
         self.pause_btn = ttk.Button(ctl, text=self._label("Pause"), command=self._pause, state="disabled")
@@ -2042,7 +2101,7 @@ class App:
         ttk.Button(tools, text="Clear", command=lambda: self.check_text.delete("1.0", "end")).pack(side="left")
         ttk.Button(tools, text="Send to the Text tab ➜", command=self._check_to_text_tab).pack(side="right")
 
-        body = ttk.Frame(tab)
+        body = self.check_card = ttk.Frame(tab)
         body.pack(fill="both", expand=True, pady=6)
         self.check_text = tk.Text(body, wrap="word", undo=True, height=6, width=40, font=font)
         bar = ttk.Scrollbar(body, command=self.check_text.yview)
@@ -2111,7 +2170,13 @@ class App:
         self.theme_menu.add_checkbutton(label="Animations", variable=self.animations, command=self._theme_save)
         menubar = tk.Menu(self.root)
         menubar.add_cascade(label="Themes", menu=self.theme_menu)
+        self._menubar = menubar
         self.root.configure(menu=menubar)
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
+        for text, card in ((self.text, self.text_card), (self.check_text, self.check_card),
+                           (self.rw_in, self.rw_in_card), (self.rw_out, self.rw_out_card)):
+            text.bind("<FocusIn>", lambda e, c=card: self._glow(c, True), add="+")
+            text.bind("<FocusOut>", lambda e, c=card: self._glow(c, False), add="+")
 
         # The clean themes' tab bar: tab names with an underline that slides to the chosen tab.
         self.tabbar = tk.Canvas(self.main, height=44, highlightthickness=0, bd=0)
@@ -2240,19 +2305,25 @@ class App:
                 st.configure(w, background=pal["panel"], troughcolor=pal["bg"], bordercolor=pal["bg"],
                              arrowcolor=pal["muted"], lightcolor=pal["panel"], darkcolor=pal["panel"], gripcount=0)
                 st.map(w, background=[("active", pal["hover"])])
-            st.configure("TNotebook", background=pal["bg"], borderwidth=0, tabmargins=0)
+            st.configure("TNotebook", background=pal["bg"], borderwidth=0, tabmargins=0, bordercolor=pal["bg"],
+                         lightcolor=pal["bg"], darkcolor=pal["bg"])
+            st.configure("TButton", width=-3)
             st.layout("TNotebook.Tab", [])                # the clean themes use their own tab bar
             st.configure("TPanedwindow", background=pal["bg"])
             for opt, val in (("background", pal["field"]), ("foreground", pal["text"]),
                              ("selectBackground", pal["sel"]), ("selectForeground", pal["text"])):
                 self.root.option_add(f"*TCombobox*Listbox.{opt}", val)
             self.root.configure(background=pal["bg"])
+            self._rounded(pal, name)
             if not self.tabbar.winfo_ismapped():
                 self.tabbar.pack(fill="x", padx=12, pady=(8, 0), before=self.tabs)
             self.tabbar.configure(background=pal["bg"])
             self._layout_tabbar(animate=False)
         self._style_tree(self.root, pal)
         self._sections(pal)
+        self._cards(pal)
+        self._progress_widgets(pal)
+        self._title_bar(pal)
         for tag, colour in (("lvl1", "#fecaca"), ("lvl2", "#fecaca"), ("lvl3", "#fed7aa"), ("lvl4", "#bfdbfe"),
                             ("lvl5", "#e5e7eb"), ("ai1", "#fef08a"), ("ai2", "#fdba74")):
             self.check_text.tag_configure(tag, background=colour, foreground="#111827")
@@ -2272,10 +2343,9 @@ class App:
             if cls == "TLabel" and hasattr(w, "_classic_fg"):
                 opts = {"foreground": w._classic_fg}
         elif cls in ("Text", "Listbox"):
-            opts = dict(background=pal["panel"] if str(w) == str(self.rw_out) else pal["field"],
+            opts = dict(background=pal["bg"] if getattr(w, "_in_box", False) else pal["field"],
                         foreground=pal["text"], insertbackground=pal["text"], selectbackground=pal["sel"],
-                        selectforeground=pal["text"], highlightthickness=1, highlightbackground=pal["border"],
-                        highlightcolor=pal["accent"], relief="flat", borderwidth=0)
+                        selectforeground=pal["text"], highlightthickness=0, relief="flat", borderwidth=0)
         elif cls == "Canvas":
             opts = dict(background=pal["bg"], highlightthickness=0)
         elif cls == "Frame":
@@ -2317,9 +2387,8 @@ class App:
             c.tag_bind(item, "<Leave>", lambda e, it=item: self._tab_hover(it, False))
             self._tab_x.append((x + 10, x + 10 + w))
             x += w + 30
-        c.create_line(0, 41, 4000, 41, fill=pal["border"])
         a, b = self._tab_x[current]
-        self._underline = c.create_rectangle(a, 38, b, 41, fill=pal["accent"], outline="")
+        self._underline = c.create_line(a + 2, 38, b - 2, 38, fill=pal["accent"], width=4, capstyle="round")
         btn = c.create_text(c.winfo_width() - 12, 20, text="🎨 Theme", anchor="e", font=f, fill=pal["muted"])
         c.tag_bind(btn, "<Button-1>", lambda e: self.theme_menu.tk_popup(e.x_root, e.y_root))
         c.tag_bind(btn, "<Enter>", lambda e, it=btn: self._tab_hover(it, True))
@@ -2336,6 +2405,7 @@ class App:
                     frame.grid_propagate(True)
                     frame.configure(height=0)
                     frame._folded = False
+                frame.configure(style="TLabelframe")
                 continue
             head = getattr(frame, "_head", None)
             if head is None:
@@ -2343,12 +2413,28 @@ class App:
                 head.bind("<Button-1>", lambda e, f=frame: self._fold(f, not f._folded))
                 frame._folded = False
                 frame._title = title
-            head.configure(text=("▸  " if frame._folded else "▾  ") + title, foreground=pal["muted"],
-                           font=(self.style.lookup(".", "font") or "TkDefaultFont"))
+            head.configure(foreground=pal["muted"], font=(self.style.lookup(".", "font") or "TkDefaultFont"))
             frame.configure(labelwidget=head)
         if pal is not None and not getattr(self, "_folded_once", False):
-            self._folded_once = True               # start with "Make it look human" folded away
+            self._folded_once = True               # start folded away, with a summary in each heading
             self._fold(self.human_frame, True, animate=False)
+            self._fold(self.speed_frame, True, animate=False)
+        self._section_heads()
+
+    def _section_heads(self):
+        """Folded headings say what's set inside, e.g. "▸  Speed · 60 WPM"."""
+        if not getattr(self, "_pal", None):
+            return
+        r = self._speed_range()
+        speed = f"random {r[0]}–{r[1]} WPM" if r else f"{max(1, self._safe_int(self.wpm, 60))} WPM"
+        human = f"typos {self.typos.get():g}% · rhythm {self.variation.get()}"
+        if self.typo_targets.get().strip():
+            human += f" · always: {self.typo_targets.get().strip()[:20]}"
+        for frame, summary in ((self.speed_frame, speed), (self.human_frame, human)):
+            head = getattr(frame, "_head", None)
+            if head is not None:
+                head.configure(text=("▸  " if frame._folded else "▾  ") + frame._title
+                               + (f"   ·   {summary}" if frame._folded else ""))
 
     def _fold(self, frame, fold, animate=True):
         self.root.update_idletasks()
@@ -2360,7 +2446,9 @@ class App:
         else:
             start, end = frame.winfo_height(), getattr(frame, "_full", frame.winfo_reqheight())
         frame._folded = fold
-        frame._head.configure(text=("▸  " if fold else "▾  ") + frame._title)
+        self._section_heads()
+        if fold:
+            frame.configure(style="Folded.TLabelframe")
         frame.grid_propagate(False)
 
         def step(t):
@@ -2370,11 +2458,285 @@ class App:
             if not fold:
                 frame.grid_propagate(True)
                 frame.configure(height=0)
+                frame.configure(style="TLabelframe")
         if animate and self._animating():
             self._tween(("fold", str(frame)), 300, step, done)
         else:
             step(1.0)
             done()
+
+    # ----- rounded look for the clean themes -----
+    def _rounded(self, pal, name):
+        """Swap the square Tk parts for rounded ones (buttons, fields, cards,
+        scrollbars, sliders, checkboxes). Images are made once per theme."""
+        st = self.style
+        cache = self._round_cache = getattr(self, "_round_cache", {})
+        if name not in cache:
+            p = f"R{len(cache)}"                     # element names must be new for each theme
+            bg, fill, border, acc = pal["bg"], pal["panel"], pal["border"], pal["accent"]
+            imgs = {}
+            mk = lambda key, *a, **k: imgs.setdefault(key, rounded_box(*a, **k))
+            # buttons: normal, hover steps, pressed, disabled
+            for k in range(6):
+                t = k / 5
+                mk(f"btn{k}", 9, mix(fill, pal["hover"], t), mix(border, acc, t), bg)
+                mk(f"acc{k}", 9, mix(acc, pal["accent2"], t), mix(acc, pal["accent2"], t), bg)
+                mk(f"card{k}", 12, pal["field"], mix(border, acc, t), bg, 1.0 + t)
+            mk("btn_p", 9, pal["sel"], acc, bg)
+            mk("btn_d", 9, bg, border, bg)
+            mk("acc_d", 9, border, border, bg)
+            mk("tool", 9, fill, border, bg)
+            mk("tool_a", 9, pal["hover"], border, bg)
+            mk("tool_s", 9, acc, acc, bg)
+            mk("fld", 8, pal["field"], border, bg)
+            mk("fld_f", 8, pal["field"], acc, bg, 1.5)
+            mk("fld_d", 8, bg, border, bg)
+            mk("section", 12, bg, border, bg)
+            for key, colour in (("idle", BOX_IDLE if sum(_rgb(bg)) > 384 else border), ("next", BOX_NEXT),
+                                ("typing", BOX_TYPING), ("done", BOX_DONE)):
+                mk(f"box_{key}", 12, bg, colour, bg, 2.0)
+            # scrollbar thumb, slider trough and knob
+            imgs["thumb"] = paint_image(10, 14, [(lambda x, y: _sdf_rrect(x, y, 2, 1, 8, 13, 3), border)], bg)
+            imgs["thumb_a"] = paint_image(10, 14, [(lambda x, y: _sdf_rrect(x, y, 2, 1, 8, 13, 3), pal["muted"])], bg)
+            imgs["trough"] = paint_image(22, 18, [(lambda x, y: _sdf_rrect(x, y, 1, 6, 21, 12, 3), border)], bg)
+            knob = lambda c: paint_image(18, 18, [(lambda x, y: math.hypot(x - 9, y - 9) - 8, c),
+                                                  (lambda x, y: math.hypot(x - 9, y - 9) - 3, pal["field"])], bg)
+            imgs["knob"], imgs["knob_a"] = knob(acc), knob(pal["accent2"])
+            # checkbox and radio
+            box = lambda x, y: _sdf_rrect(x, y, 1, 1, 17, 17, 5)
+            inner = lambda x, y: _sdf_rrect(x, y, 2.5, 2.5, 15.5, 15.5, 4)
+            tick = lambda x, y: _sdf_segments(x, y, [(5, 9.5), (8, 12.5), (13.5, 6)], 1.2)
+            imgs["chk"] = paint_image(18, 18, [(box, border), (inner, pal["field"])], bg)
+            imgs["chk_s"] = paint_image(18, 18, [(box, acc), (tick, pal["accent_text"])], bg)
+            imgs["chk_d"] = paint_image(18, 18, [(box, border), (inner, bg)], bg)
+            ring = lambda x, y: math.hypot(x - 9, y - 9) - 8
+            hole = lambda x, y: math.hypot(x - 9, y - 9) - 6.5
+            dot = lambda x, y: math.hypot(x - 9, y - 9) - 3.5
+            imgs["rad"] = paint_image(18, 18, [(ring, border), (hole, pal["field"])], bg)
+            imgs["rad_s"] = paint_image(18, 18, [(ring, acc), (hole, pal["field"]), (dot, acc)], bg)
+            imgs["rad_d"] = paint_image(18, 18, [(ring, border), (hole, bg)], bg)
+
+            E = lambda n, img, *states, **kw: st.element_create(f"{p}.{n}", "image", img, *states, **kw)
+            for k in range(6):
+                E(f"btn{k}", imgs[f"btn{k}"], ("disabled", imgs["btn_d"]), ("pressed", imgs["btn_p"]),
+                  ("active", imgs["btn5"] if k == 0 else imgs[f"btn{k}"]), border=9, sticky="nsew")
+                E(f"acc{k}", imgs[f"acc{k}"], ("pressed", imgs["acc0"]), ("active", imgs["acc5"] if k == 0 else imgs[f"acc{k}"]),
+                  border=9, sticky="nsew")
+                E(f"card{k}", imgs[f"card{k}"], border=12, sticky="nsew")
+            E("accbase", imgs["acc0"], ("disabled", imgs["acc_d"]), ("pressed", imgs["acc0"]), ("active", imgs["acc5"]),
+              border=9, sticky="nsew")
+            E("tool", imgs["tool"], ("selected", imgs["tool_s"]), ("active", imgs["tool_a"]), border=9, sticky="nsew")
+            E("fld", imgs["fld"], ("disabled", imgs["fld_d"]), ("focus", imgs["fld_f"]), border=8, sticky="nsew")
+            E("section", imgs["section"], border=12, sticky="nsew")
+            for key in ("idle", "next", "typing", "done"):
+                E(f"box_{key}", imgs[f"box_{key}"], border=12, sticky="nsew")
+            E("v.thumb", imgs["thumb"], ("active", imgs["thumb_a"]), ("pressed", imgs["thumb_a"]),
+              border=(0, 5, 0, 5), sticky="nsew")
+            E("h.trough", imgs["trough"], border=(9, 0, 9, 0), sticky="ew")
+            E("slider", imgs["knob"], ("active", imgs["knob_a"]), ("pressed", imgs["knob_a"]), sticky="")
+            E("chk", imgs["chk"], ("disabled", imgs["chk_d"]), ("selected", imgs["chk_s"]), sticky="")
+            E("rad", imgs["rad"], ("disabled", imgs["rad_d"]), ("selected", imgs["rad_s"]), sticky="")
+            cache[name] = (p, imgs)
+        p, _ = cache[name]
+
+        def button(element, part="Button"):
+            return [(f"{p}.{element}", {"sticky": "nsew", "children": [
+                (f"{part}.padding", {"sticky": "nsew", "children": [(f"{part}.label", {"sticky": "nsew"})]})]})]
+        st.layout("TButton", button("btn0"))
+        st.layout("Accent.TButton", button("accbase"))
+        for k in range(1, 6):
+            st.layout(f"H{k}.TButton", button(f"btn{k}"))
+            st.layout(f"H{k}.Accent.TButton", button(f"acc{k}"))
+            st.map(f"H{k}.Accent.TButton", foreground=[("disabled", pal["accent_text"])])
+        st.layout("Toolbutton", button("tool", "Toolbutton"))
+        st.layout("TEntry", [(f"{p}.fld", {"sticky": "nsew", "children": [
+            ("Entry.padding", {"sticky": "nsew", "children": [("Entry.textarea", {"sticky": "nsew"})]})]})])
+        st.layout("TCombobox", [(f"{p}.fld", {"sticky": "nsew", "children": [
+            ("Combobox.downarrow", {"side": "right", "sticky": "ns"}),
+            ("Combobox.padding", {"expand": "1", "sticky": "nsew", "children": [
+                ("Combobox.textarea", {"sticky": "nsew"})]})]})])
+        st.layout("TSpinbox", [(f"{p}.fld", {"sticky": "nsew", "children": [
+            ("null", {"side": "right", "sticky": "ns", "children": [
+                ("Spinbox.uparrow", {"side": "top", "sticky": "e"}),
+                ("Spinbox.downarrow", {"side": "bottom", "sticky": "e"})]}),
+            ("Spinbox.padding", {"sticky": "nsew", "children": [("Spinbox.textarea", {"sticky": "nsew"})]})]})])
+        for w in ("TEntry", "TCombobox", "TSpinbox"):
+            st.configure(w, padding=(8, 4), arrowcolor=pal["muted"], background=pal["field"],
+                         bordercolor=pal["field"], lightcolor=pal["field"], darkcolor=pal["field"])
+            st.map(w, background=[("active", pal["field"])], fieldbackground=[("readonly", pal["field"])])
+        st.layout("TLabelframe", [(f"{p}.section", {"sticky": "nsew"})])
+        st.layout("Folded.TLabelframe", [])
+        st.configure("TLabelframe", padding=(10, 6))
+        st.layout("Card.TFrame", [(f"{p}.card0", {"sticky": "nsew"})])
+        st.configure("Card.TFrame", padding=8)
+        for k in range(1, 6):
+            st.layout(f"G{k}.Card.TFrame", [(f"{p}.card{k}", {"sticky": "nsew"})])
+        for key in ("idle", "next", "typing", "done"):
+            st.layout(f"Box{key.title()}.TFrame", [(f"{p}.box_{key}", {"sticky": "nsew"})])
+            st.configure(f"Box{key.title()}.TFrame", padding=(10, 8))
+        for orient in ("Vertical", "Horizontal"):
+            st.layout(f"{orient}.TScrollbar", [(f"{orient}.Scrollbar.trough", {"sticky": "nsew", "children": [
+                (f"{p}.v.thumb", {"expand": "1", "sticky": "nsew"})]})])
+            st.configure(f"{orient}.TScrollbar", troughcolor=pal["bg"], width=10, arrowsize=10)
+        st.layout("Horizontal.TScale", [(f"{p}.h.trough", {"sticky": "ew", "children": [
+            (f"{p}.slider", {"side": "left", "sticky": ""})]})])
+        st.configure("Horizontal.TScale", background=pal["bg"])
+        for kind, ind in (("Checkbutton", "chk"), ("Radiobutton", "rad")):
+            st.layout(f"T{kind}", [(f"{kind}.padding", {"sticky": "nsew", "children": [
+                (f"{p}.{ind}", {"side": "left", "sticky": ""}),
+                (f"{kind}.focus", {"side": "left", "sticky": "w", "children": [
+                    (f"{kind}.label", {"sticky": "nsew"})]})]})])
+            st.configure(f"T{kind}", padding=(2, 2), spacing=6)
+
+    def _cards(self, pal):
+        """Text boxes sit in rounded cards in the clean themes, and glow when you type in them."""
+        for card in (self.text_card, self.check_card, self.rw_in_card, self.rw_out_card):
+            card.configure(style="Card.TFrame" if pal else "TFrame", padding=8 if pal else 0)
+        for b in self.boxes:
+            self._box_style(b)
+
+    def _box_style(self, b):
+        pal = self._pal
+        inner = b.get("inner")
+        if inner is None:
+            return
+        if pal is None:
+            inner.configure(style="TFrame", padding=0)
+            b["card"].configure(highlightthickness=2, padx=6, pady=4)
+        else:
+            colour = getattr(b["card"], "_colour", BOX_IDLE)
+            key = {BOX_NEXT: "Next", BOX_TYPING: "Typing", BOX_DONE: "Done"}.get(colour, "Idle")
+            inner.configure(style=f"Box{key}.TFrame", padding=(10, 8))
+            b["card"].configure(highlightthickness=0, padx=0, pady=2, background=pal["bg"])
+
+    def _glow(self, card, on):
+        """The card around a text box fades its border to the accent colour while you type."""
+        if not self._pal:
+            return
+        if not self.animations.get():
+            card.configure(style="G5.Card.TFrame" if on else "Card.TFrame")
+            return
+        cur = getattr(card, "_glow", 0)
+        target = 5 if on else 0
+
+        def step(t):
+            k = round(cur + (target - cur) * t)
+            card._glow = k
+            card.configure(style=f"G{k}.Card.TFrame" if k else "Card.TFrame")
+        self._tween(("glow", str(card)), 260, step)
+
+    def _reveal(self, widget, text):
+        """Put text into a box. In the clean themes it types itself in."""
+        widget.edit_separator()
+        widget.delete("1.0", "end")
+        if not self._animating() or len(text) < 2:
+            widget.insert("1.0", text)
+            widget.edit_separator()
+            return
+        total = len(text)
+        shown = [0]
+
+        def step(t):
+            n = int(total * t)
+            if n > shown[0]:
+                widget.insert("end", text[shown[0]:n])
+                shown[0] = n
+                widget.see("end")
+
+        def done():
+            if shown[0] < total:
+                widget.insert("end", text[shown[0]:])
+            widget.edit_separator()
+            widget.see("1.0")
+        self._tween(("reveal", str(widget)), min(900, 120 + 3 * total), step, done)
+
+    # ----- circular progress -----
+    def _draw_ring(self, canvas, pct=None, spin=None, label=None):
+        """A progress ring (pct 0-100), or a spinning arc (spin = angle)."""
+        pal = self._pal
+        if not pal:
+            return
+        c = canvas
+        c.delete("all")
+        s = int(c.cget("width"))
+        pad, w = 5, 5
+        c.create_oval(pad, pad, s - pad, s - pad, outline=pal["border"], width=w)
+        r = (s - 2 * pad) / 2
+        cx = cy = s / 2
+
+        def cap(angle):
+            a = math.radians(angle)
+            x, y = cx + r * math.cos(a), cy - r * math.sin(a)
+            c.create_oval(x - w / 2, y - w / 2, x + w / 2, y + w / 2, fill=pal["accent"], outline="")
+        if spin is not None:
+            start, extent = spin, 100
+        else:
+            start, extent = 90, -3.6 * max(0.0, min(100.0, pct or 0))
+        if abs(extent) > 0.5:
+            c.create_arc(pad, pad, s - pad, s - pad, start=start, extent=extent, style="arc",
+                         outline=pal["accent"], width=w)
+            cap(start)
+            cap(start + extent)
+        text = label if label is not None else ("" if spin is not None else f"{int(round(pct or 0))}%")
+        font = (self.style.lookup(".", "font") or "TkDefaultFont")
+        c.create_text(cx, cy, text=text, fill=pal["text"], font=font)
+
+    def _progress_widgets(self, pal):
+        if pal is None:
+            self.ring.pack_forget()
+            self.rw_ring.pack_forget()
+            if not self.progress.winfo_ismapped():
+                self.progress.pack(fill="x", padx=12, pady=(4, 2), after=self.ctl)
+            return
+        self.progress.pack_forget()
+        for ring in (self.ring, self.rw_ring):
+            ring.configure(background=pal["bg"])
+        if not self.ring.winfo_ismapped():
+            self.ring.pack(side="right")
+        self._draw_ring(self.ring, self._progress_shown)
+
+    # ----- window title bar -----
+    def _title_bar(self, pal):
+        """Colour the window's own title bar (where close and minimise are) to match:
+        the colour itself on Windows 11, dark or light on Windows 10 and Mac."""
+        dark = bool(pal) and sum(_rgb(pal["bg"])) < 3 * 128
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                dwm = ctypes.windll.dwmapi
+
+                def put(attr, value):
+                    v = ctypes.c_int(value)
+                    dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
+                put(20, 1 if dark else 0)                       # dark title bar
+                if pal:
+                    r, g, b = _rgb(pal["bg"])
+                    tr, tg, tb = _rgb(pal["text"])
+                    put(35, r | (g << 8) | (b << 16))           # title bar colour (Windows 11)
+                    put(36, tr | (tg << 8) | (tb << 16))        # title text colour
+                    put(34, r | (g << 8) | (b << 16))           # window border colour
+                else:
+                    for attr in (35, 36, 34):
+                        put(attr, -1)                           # back to the normal colours
+                w, h = self.root.winfo_width(), self.root.winfo_height()
+                self.root.geometry(f"{w + 1}x{h}")              # nudge Windows to repaint the bar
+                self.root.after(30, lambda: self.root.geometry(f"{w}x{h}"))
+            elif IS_MAC:
+                self.root.tk.call("::tk::unsupported::MacWindowStyle", "appearance", self.root,
+                                  "darkaqua" if dark else ("aqua" if pal else "auto"))
+        except Exception:
+            pass                                                # not supported here: no harm done
+        # The menu strip (Windows/Linux) isn't needed in the clean themes: the 🎨 button has it.
+        if not IS_MAC:
+            self.root.configure(menu="" if pal else self._menubar)
+
+    def _close(self):
+        """Fade out when the window closes (clean themes)."""
+        if self._animating():
+            self._fade_window(1.0, 0.0, 220, then=self.root.destroy)
+        else:
+            self.root.destroy()
 
     def _theme_window(self, win):
         """Pop-up windows follow the theme too."""
@@ -2406,46 +2768,41 @@ class App:
         (a0, b0), (a1, b1) = self._underline_at, self._tab_x[i]
         self._underline_at = (a1, b1)
         if not self.animations.get():
-            self.tabbar.coords(self._underline, a1, 38, b1, 41)
+            self.tabbar.coords(self._underline, a1 + 2, 38, b1 - 2, 38)
             return
 
         def step(t):
-            self.tabbar.coords(self._underline, a0 + (a1 - a0) * t, 38, b0 + (b1 - b0) * t, 41)
+            self.tabbar.coords(self._underline, a0 + (a1 - a0) * t + 2, 38, b0 + (b1 - b0) * t - 2, 38)
         self._tween("underline", 320, step)
         # and the page itself slides in a little
         page = self.tabs.nametowidget(self.tabs.select())
         self._tween("page", 260, lambda t: page.configure(padding=(8 + 24 * (1 - t), 8, 8, 8)))
 
     def _btn_hover(self, w, on):
+        """Buttons fade to their hover colour (stepping through rounded images)."""
         if not self._animating() or str(w.cget("state")) == "disabled":
             return
-        pal = self._pal
         base = getattr(w, "_base_style", None) or str(w.cget("style")) or "TButton"
-        if base.startswith("Anim"):
+        if base.startswith("H") and "." in base:
+            base = base.split(".", 1)[1]
+        if base not in ("TButton", "Accent.TButton"):
             return
         w._base_style = base
-        accent = base == "Accent.TButton"
-        c0, c1 = (pal["accent"], pal["accent2"]) if accent else (pal["panel"], pal["hover"])
-        if not on:
-            c0, c1 = c1, c0
-        name = f"Anim{id(w)}.{base}"
+        cur = getattr(w, "_hover", 0)
+        target = 5 if on else 0
 
         def step(t):
-            colour = mix(c0, c1, t)
-            self.style.configure(name, background=colour, bordercolor=mix(pal["border"], pal["accent"], t if on else 1 - t))
-            self.style.map(name, background=[("pressed", pal["sel"] if not accent else pal["accent"]),
-                                             ("active", colour)])
-            w.configure(style=name)
-
-        def done():
-            if not on:
-                w.configure(style=w._base_style)
-        self._tween(("btn", id(w)), 180, step, done)
+            k = round(cur + (target - cur) * t)
+            w._hover = k
+            w.configure(style=f"H{k}.{base}" if k else base)
+        self._tween(("btn", id(w)), 180, step)
 
     def _set_progress(self, value):
         if not self._animating():
             self.progress["value"] = value
             self._progress_shown = value
+            if self._pal:
+                self._draw_ring(self.ring, value)
             return
         start = self._progress_shown
         if abs(value - start) < 0.1:
@@ -2454,6 +2811,7 @@ class App:
         def step(t):
             self._progress_shown = start + (value - start) * t
             self.progress["value"] = self._progress_shown
+            self._draw_ring(self.ring, self._progress_shown)
         self._tween("progress", 280, step)
 
     def _shown(self, var):
@@ -2476,35 +2834,40 @@ class App:
         return shown
 
     def _toast(self, text):
-        """A small message that slides up from the bottom of the window, then away."""
+        """A small rounded message that slides up from the bottom of the window, then away."""
         pal = self._pal
         if not pal:
             return
         old = getattr(self, "_toast_label", None)
         if old is not None:
             old.destroy()
-        lab = self._toast_label = tk.Label(self.root, text="  ✓  " + text[:60] + "  ", bg=pal["accent"],
-                                           fg=pal["accent_text"], padx=10, pady=8,
-                                           font=(self.style.lookup(".", "font") or "TkDefaultFont"))
-        self._tween("toast", 380, lambda t: lab.place(relx=0.5, rely=1.0, y=40 - 100 * t, anchor="s"),
+        font = tkfont.Font(font=self.style.lookup(".", "font") or "TkDefaultFont")
+        msg = "✓  " + text[:60]
+        w, h = font.measure(msg) + 36, font.metrics("linespace") + 18
+        c = self._toast_label = tk.Canvas(self.root, width=w, height=h, highlightthickness=0, bd=0,
+                                          background=pal["bg"])
+        r = h / 2
+        c.create_oval(0, 0, h, h, fill=pal["accent"], outline="")
+        c.create_oval(w - h, 0, w, h, fill=pal["accent"], outline="")
+        c.create_rectangle(r, 0, w - r, h, fill=pal["accent"], outline="")
+        c.create_text(w / 2, h / 2, text=msg, fill=pal["accent_text"], font=font)
+        self._tween("toast", 380, lambda t: c.place(relx=0.5, rely=1.0, y=40 - 100 * t, anchor="s"),
                     then=lambda: self.root.after(1700, lambda: self._tween(
-                        "toast", 300, lambda t: lab.place(relx=0.5, rely=1.0, y=-60 + 120 * t, anchor="s"),
-                        then=lab.destroy)))
+                        "toast", 300, lambda t: c.place(relx=0.5, rely=1.0, y=-60 + 120 * t, anchor="s"),
+                        then=c.destroy)))
 
-    def _pulse_start(self, on):
-        """The Start button gently pulses during the countdown."""
+    def _pulse_start(self, on, countdown=None):
+        """The Start button gently pulses during the countdown, and the ring spins."""
         if not self._animating():
             return
-        pal = self._pal
         if on:
-            phase = (math.sin(time.monotonic() * 6) + 1) / 2
-            self.style.configure("Pulse.Accent.TButton", background=mix(pal["accent"], pal["accent2"], phase))
-            self.style.map("Pulse.Accent.TButton", background=[("disabled", mix(pal["accent"], pal["accent2"], phase))],
-                           foreground=[("disabled", pal["accent_text"])])
-            if str(self.start_btn.cget("style")) != "Pulse.Accent.TButton":
-                self.start_btn.configure(style="Pulse.Accent.TButton")
-        elif str(self.start_btn.cget("style")) == "Pulse.Accent.TButton":
+            k = round((math.sin(time.monotonic() * 6) + 1) / 2 * 5)
+            self.start_btn.configure(style=f"H{k}.Accent.TButton" if k else "Accent.TButton")
+            self._draw_ring(self.ring, spin=(time.monotonic() * 360) % 360,
+                            label=str(countdown) if countdown else "")
+        elif str(self.start_btn.cget("style")).startswith("H"):
             self.start_btn.configure(style="Accent.TButton")
+            self._draw_ring(self.ring, self._progress_shown)
 
     def _card_colour(self, card, colour):
         """Box borders fade to their new colour."""
@@ -2512,6 +2875,11 @@ class App:
             return
         old = getattr(card, "_colour", None) or colour
         card._colour = colour
+        if getattr(self, "_pal", None):     # clean themes: the rounded card changes colour
+            for b in self.boxes:
+                if b["card"] is card:
+                    self._box_style(b)
+            return
         if not self._animating() or old == colour:
             card.configure(highlightbackground=colour, highlightcolor=colour)
             return
@@ -2579,15 +2947,19 @@ class App:
 
         panes = ttk.PanedWindow(tab, orient="vertical")
         panes.pack(fill="both", expand=True, pady=6)
-        self.rw_in = tk.Text(panes, wrap="word", undo=True, height=6, font=font)
-        self.rw_out = tk.Text(panes, wrap="word", undo=True, height=6, font=font, background="#f7f7f2")
-        panes.add(self.rw_in, weight=1)
-        panes.add(self.rw_out, weight=1)
+        self.rw_in_card, self.rw_out_card = ttk.Frame(panes), ttk.Frame(panes)
+        self.rw_in = tk.Text(self.rw_in_card, wrap="word", undo=True, height=6, font=font)
+        self.rw_out = tk.Text(self.rw_out_card, wrap="word", undo=True, height=6, font=font, background="#f7f7f2")
+        self.rw_in.pack(fill="both", expand=True)
+        self.rw_out.pack(fill="both", expand=True)
+        panes.add(self.rw_in_card, weight=1)
+        panes.add(self.rw_out_card, weight=1)
 
         row = ttk.Frame(tab)
         row.pack(fill="x")
         self.rw_btn = ttk.Button(row, text="✨ Rewrite", command=self._rw_start)
         self.rw_btn.pack(side="left")
+        self.rw_ring = tk.Canvas(row, width=32, height=32, highlightthickness=0, bd=0)   # spinner (clean themes)
         ttk.Button(row, text="Copy", command=lambda: self._copy(self.rw_out.get("1.0", "end-1c"))).pack(side="left", padx=4)
         ttk.Button(row, text="Send to the Check tab", command=self._rw_to_check).pack(side="right")
         ttk.Button(row, text="Send to the Text tab", command=self._rw_to_text).pack(side="right", padx=4)
@@ -2752,8 +3124,13 @@ class App:
             self.rw_out.insert("end", "".join(pieces))
             self.rw_out.see("end")
         if self.rw_thread is not None and self.rw_thread.is_alive():
-            self.root.after(50, self._rw_pump)
+            if self._pal:                       # a spinning ring while it writes
+                if not self.rw_ring.winfo_ismapped():
+                    self.rw_ring.pack(side="left", padx=6)
+                self._draw_ring(self.rw_ring, spin=(time.monotonic() * 300) % 360)
+            self.root.after(30 if self._pal else 50, self._rw_pump)
             return
+        self.rw_ring.pack_forget()
         self.rw_btn.configure(text="✨ Rewrite")
         kind, value = self._rw_result or ("error", "Stopped.")
         if self.rw_stop.is_set():
@@ -2772,7 +3149,10 @@ class App:
         self.status.set("Copied the rewrite to the Text tab, ready to type.")
 
     def _rw_to_check(self):
-        self._replace(self.check_text, self.rw_out.get("1.0", "end-1c"))
+        if self._pal:
+            self._reveal(self.check_text, self.rw_out.get("1.0", "end-1c"))
+        else:
+            self._replace(self.check_text, self.rw_out.get("1.0", "end-1c"))
         self.tabs.select(2)
 
     # ----- references -----
@@ -3071,23 +3451,26 @@ class App:
         n = len(self.boxes) + 1
         card = tk.Frame(self.box_area.inner, highlightthickness=2, highlightbackground=BOX_IDLE,
                         highlightcolor=BOX_IDLE, bd=0, padx=6, pady=4)
-        head = ttk.Frame(card)
+        inner = ttk.Frame(card)              # a rounded card in the clean themes
+        inner.pack(fill="both", expand=True)
+        head = ttk.Frame(inner)
         head.pack(fill="x")
         title = ttk.Label(head, text=f"Box {n}", font=("", 10, "bold"))
         title.pack(side="left")
         status = tk.StringVar()
         ttk.Label(head, textvariable=status).pack(side="left", padx=8)
-        entry = {"card": card, "title": title, "status": status, "done": False, "target": None, "spot": None}
+        entry = {"card": card, "title": title, "status": status, "done": False, "target": None, "spot": None,
+                 "inner": inner}
         ttk.Button(head, text="✕", width=3, command=lambda: self._remove_box(entry)).pack(side="right")
         ttk.Button(head, text="Type this", command=lambda: self._type_box(entry)).pack(side="right", padx=4)
-        body = tk.Text(card, wrap="word", undo=True, height=4, font=("", 13 if IS_MAC else 10))
+        body = tk.Text(inner, wrap="word", undo=True, height=4, font=("", 13 if IS_MAC else 10))
         body.pack(fill="both", expand=True, pady=(4, 0))
         if text:
             body.insert("1.0", text)
         body.bind("<<Modified>>", lambda e, b=body: self._on_box_changed(b))
         entry["text"] = body
         # Which Word cell this box goes in (shown once a document is connected).
-        where = ttk.Frame(card)
+        where = ttk.Frame(inner)
         ttk.Label(where, text="Goes in:").pack(side="left")
         combo = ttk.Combobox(where, state="readonly", style="Wide.TCombobox",
                              postcommand=lambda: self._widen(combo))
@@ -3095,7 +3478,7 @@ class App:
         combo.bind("<<ComboboxSelected>>", lambda e: self._on_target_picked(entry))
         entry["where"], entry["combo"] = where, combo
         # Where to click on the screen before typing this box.
-        spot_row = ttk.Frame(card)
+        spot_row = ttk.Frame(inner)
         ttk.Button(spot_row, text="Set spot", command=lambda: self._set_spot(entry)).pack(side="left")
         ttk.Button(spot_row, text="Show", width=6, command=lambda: self._show_spot(entry)).pack(side="left", padx=4)
         entry["spot_var"] = tk.StringVar(value="No spot yet")
@@ -3103,8 +3486,10 @@ class App:
         entry["spot_row"] = spot_row
         self._show_rows(entry)
         self.boxes.append(entry)
+        body._in_box = True
         if hasattr(self, "_classic_defaults"):
             self._style_tree(card, self._pal)
+            self._box_style(entry)
         self._layout_boxes(force=True)
         if focus:
             body.focus_set()
@@ -3405,6 +3790,9 @@ class App:
             return default
 
     def _set_text(self, text):
+        if getattr(self, "_pal", None):
+            self._reveal(self.text, text)      # types itself in (clean themes)
+            return
         self.text.edit_separator()
         self.text.delete("1.0", "end")
         self.text.insert("1.0", text)
@@ -3466,6 +3854,8 @@ class App:
         if self.typist is not None:
             self.typist.wpm = max(1, self._safe_int(self.wpm, 60))
             self.typist.wpm_range = self._speed_range()
+        if hasattr(self, "_section_heads"):
+            self._section_heads()
         state = "disabled" if self.random_speed.get() else "normal"
         for w in (self.wpm_scale, self.wpm_box):
             w.configure(state=state)
@@ -3787,7 +4177,7 @@ class App:
                 self.status.set(t.error if run_kind == "word" else "Something went wrong: " + t.error)
 
             self.pause_btn.configure(text=self._label("Resume" if t.paused.is_set() else "Pause"))
-            self._pulse_start(state == "countdown" and t.busy)
+            self._pulse_start(state == "countdown" and t.busy, t.countdown_left)
             if not t.busy and str(self.start_btn["state"]) == "disabled":
                 self.start_btn.configure(state="normal")
                 self.pause_btn.configure(state="disabled")
