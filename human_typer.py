@@ -2519,6 +2519,26 @@ def rounded_box(r, fill, border, bg, bw=1.0, size=None):
     return paint_image(s, s, layers, bg)
 
 
+def widen(img, bx, by, mid=64):
+    """The same 9-slice image with a big middle (bx, by: border sizes; 0 = don't
+    widen that way). Tk stretches these by repeating the middle, so a tiny middle
+    meant thousands of little copies every time a button or box was drawn; a big
+    one needs only a few. The copying is done by Tk itself, so it's quick."""
+    w, h = img.width(), img.height()
+    W = 2 * bx + mid if bx and w - 2 * bx < mid else w
+    H = 2 * by + mid if by and h - 2 * by < mid else h
+    if (W, H) == (w, h):
+        return img
+    new = tk.PhotoImage(width=W, height=H)
+    xs = [((0, bx), (0, bx)), ((bx, w - bx), (bx, W - bx)), ((w - bx, w), (W - bx, W))] if bx else [((0, w), (0, W))]
+    ys = [((0, by), (0, by)), ((by, h - by), (by, H - by)), ((h - by, h), (H - by, H))] if by else [((0, h), (0, H))]
+    for (sx0, sx1), (dx0, dx1) in xs:
+        for (sy0, sy1), (dy0, dy1) in ys:
+            if sx1 > sx0 and sy1 > sy0:
+                new.tk.call(new, "copy", img, "-from", sx0, sy0, sx1, sy1, "-to", dx0, dy0, dx1, dy1)
+    return new
+
+
 def mix(c1, c2, t):
     """A colour part-way (t from 0 to 1) between two colours."""
     a, b = _rgb(c1), _rgb(c2)
@@ -3138,8 +3158,6 @@ class App:
         self._bridge_jobs = []
         self._bridge_lock = threading.Lock()
         self.bridge = start_bridge(self._bridge_handle)
-        if self._animating():
-            self._fade_window(0.0, 1.0, 450)       # fade in when the app opens
 
     def _animating(self):
         return bool(getattr(self, "_pal", None)) and self.animations.get()
@@ -3153,11 +3171,7 @@ class App:
         """Switch theme (with a quick fade when animations are on)."""
         self.theme_name.set(name)
         self._theme_save()
-        if self.animations.get() and (THEMES.get(name) or self._pal):
-            self._fade_window(1.0, 0.25, 140, then=lambda: (self._apply_theme(name),
-                                                            self._fade_window(0.25, 1.0, 260)))
-        else:
-            self._apply_theme(name)
+        self._apply_theme(name)
 
     def _tween(self, key, ms, step, then=None):
         """Run step(t) for t from 0 to 1 over ms milliseconds, smoothly. A new tween
@@ -3332,10 +3346,13 @@ class App:
                 continue
             w = f.measure(name)
             colour = pal["text"] if i == current else pal["muted"]
+            # The whole tab area takes the click, not just the letters.
+            hit = c.create_rectangle(x, 0, x + w + 20, 44, fill=pal["bg"], outline="")
             item = c.create_text(x + 10, 20, text=name, anchor="w", font=f, fill=colour, tags=(f"tab{i}", "tab"))
-            c.tag_bind(item, "<Button-1>", lambda e, i=i: self.tabs.select(i))
-            c.tag_bind(item, "<Enter>", lambda e, it=item: self._tab_hover(it, True))
-            c.tag_bind(item, "<Leave>", lambda e, it=item: self._tab_hover(it, False))
+            for it in (hit, item):
+                c.tag_bind(it, "<Button-1>", lambda e, i=i: self.tabs.select(i))
+                c.tag_bind(it, "<Enter>", lambda e, t=item: self._tab_hover(t, True))
+                c.tag_bind(it, "<Leave>", lambda e, t=item: self._tab_hover(t, False))
             self._tab_x[i] = (x + 10, x + 10 + w)
             x += w + 30
         a, b = self._tab_x[current]
@@ -3415,11 +3432,8 @@ class App:
                 frame.grid_propagate(True)
                 frame.configure(height=0)
                 frame.configure(style="TLabelframe")
-        if animate and self._animating():
-            self._tween(("fold", str(frame)), 300, step, done)
-        else:
-            step(1.0)
-            done()
+        step(1.0)
+        done()
 
     # ----- rounded look for the clean themes -----
     def _rounded(self, pal, name):
@@ -3472,7 +3486,21 @@ class App:
             imgs["rad_s"] = paint_image(18, 18, [(ring, acc), (hole, pal["field"]), (dot, acc)], bg)
             imgs["rad_d"] = paint_image(18, 18, [(ring, border), (hole, bg)], bg)
 
-            E = lambda n, img, *states, **kw: st.element_create(f"{p}.{n}", "image", img, *states, **kw)
+            small = {}                       # each widened image's old size, kept as the smallest it gets
+            for key in list(imgs):
+                b = (12 if key.startswith(("card", "section", "box_")) else 8 if key.startswith("fld") else
+                     9 if key.startswith(("btn", "acc", "tool")) else None)
+                bx, by = (b, b) if b else (0, 5) if key.startswith("thumb") else (9, 0) if key == "trough" else (0, 0)
+                if bx or by:
+                    size = (imgs[key].width(), imgs[key].height())
+                    imgs[key] = widen(imgs[key], bx, by)
+                    small[str(imgs[key])] = size
+
+            def E(n, img, *states, **kw):
+                if str(img) in small:
+                    kw.setdefault("width", small[str(img)][0])
+                    kw.setdefault("height", small[str(img)][1])
+                st.element_create(f"{p}.{n}", "image", img, *states, **kw)
             for k in range(6):
                 E(f"btn{k}", imgs[f"btn{k}"], ("disabled", imgs["btn_d"]), ("pressed", imgs["btn_p"]),
                   ("active", imgs["btn5"] if k == 0 else imgs[f"btn{k}"]), border=9, sticky="nsew")
@@ -3582,29 +3610,11 @@ class App:
         self._tween(("glow", str(card)), 260, step)
 
     def _reveal(self, widget, text):
-        """Put text into a box. In the clean themes it types itself in."""
+        """Put text into a box, straight away (so it's ready to use at once)."""
         widget.edit_separator()
         widget.delete("1.0", "end")
-        if not self._animating() or len(text) < 2:
-            widget.insert("1.0", text)
-            widget.edit_separator()
-            return
-        total = len(text)
-        shown = [0]
-
-        def step(t):
-            n = int(total * t)
-            if n > shown[0]:
-                widget.insert("end", text[shown[0]:n])
-                shown[0] = n
-                widget.see("end")
-
-        def done():
-            if shown[0] < total:
-                widget.insert("end", text[shown[0]:])
-            widget.edit_separator()
-            widget.see("1.0")
-        self._tween(("reveal", str(widget)), min(900, 120 + 3 * total), step, done)
+        widget.insert("1.0", text)
+        widget.edit_separator()
 
     # ----- circular progress -----
     def _draw_ring(self, canvas, pct=None, spin=None, label=None):
@@ -3689,10 +3699,7 @@ class App:
 
     def _close(self):
         """Fade out when the window closes (clean themes)."""
-        if self._animating():
-            self._fade_window(1.0, 0.0, 220, then=self.root.destroy)
-        else:
-            self.root.destroy()
+        self.root.destroy()
 
     # ----- Simple view -----
     def _apply_simple(self, save=True):
@@ -3819,7 +3826,7 @@ class App:
         if not self.animations.get():
             self.tabbar.itemconfigure(item, fill=b)
             return
-        self._tween(("tabhover", item), 160, lambda t: self.tabbar.itemconfigure(item, fill=mix(a, b, t)))
+        self.tabbar.itemconfigure(item, fill=b)
 
     def _move_underline(self):
         pal = self._pal
@@ -3838,10 +3845,8 @@ class App:
 
         def step(t):
             self.tabbar.coords(self._underline, a0 + (a1 - a0) * t + 2, 38, b0 + (b1 - b0) * t - 2, 38)
-        self._tween("underline", 320, step)
+        step(1.0)                          # straight away: no waiting on a tab click
         # and the page itself slides in a little
-        page = self.tabs.nametowidget(self.tabs.select())
-        self._tween("page", 260, lambda t: page.configure(padding=(8 + 24 * (1 - t), 8, 8, 8)))
 
     def _btn_hover(self, w, on):
         """Buttons fade to their hover colour (stepping through rounded images)."""
@@ -3860,7 +3865,7 @@ class App:
             k = round(cur + (target - cur) * t)
             w._hover = k
             w.configure(style=f"H{k}.{base}" if k else base)
-        self._tween(("btn", id(w)), 180, step)
+        step(1.0)
 
     def _set_progress(self, value):
         if not self._animating():
@@ -3887,13 +3892,8 @@ class App:
         def changed(*_):
             new = var.get()
             old = shown.get()
-            if not self._animating() or new[:14] == old[:14]:
-                shown.set(new)
-                return
-            total = len(new)
-            self._tween(("type", str(var)), min(450, 8 * total + 80),
-                        lambda t: shown.set(new[:max(1, int(total * t))]))
-            if new.startswith(TOAST_STARTS):
+            shown.set(new)
+            if self._animating() and new[:14] != old[:14] and new.startswith(TOAST_STARTS):
                 self._toast(new.split(". ")[0].split("  ")[0])
         var.trace_add("write", changed)
         return shown

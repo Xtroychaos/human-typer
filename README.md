@@ -339,10 +339,10 @@ themes):
     the countdown (with the seconds left) and while a rewrite is being written.
   - **The window's title bar** (where close and minimise are) takes the theme's colour on Windows 11, and goes
     dark or light to match on Windows 10 and Mac. The menu strip is tucked away (the 🎨 button has it).
-  - **Animations:** the window fades in and fades out when you close it; switching themes fades over; the tab
-    underline slides; buttons fade on hover; text boxes glow while you type in them; text the app fills in types
-    itself in; highlights and box borders fade; messages type themselves out; a ✓ message slides up when something
-    finishes; the Start button pulses during the countdown.
+  - **No waiting:** tabs, buttons, menus, folding sections and messages respond straight away. The rounded parts
+    are drawn as a few big pieces, so switching tabs is as quick as in Classic.
+  - **Animations** that never hold you up: text boxes glow while you type in them; highlights and box borders
+    fade; a ✓ message slides up when something finishes; the Start button pulses during the countdown.
   - **Speed**, **Make it look human** and **More options** start folded, with a summary in the heading (like
     "Speed · 60 WPM"). Click a heading to open it.
 - **Classic** – the original grey look.
