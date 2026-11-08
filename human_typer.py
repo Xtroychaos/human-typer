@@ -567,6 +567,151 @@ def ai_signals(text):
     return sents, notes
 
 
+# Polished, formal words and phrases that AI writing leans on (and most people,
+# especially students, rarely reach for). Each sentence counts how many it has.
+_AI_STYLE = [
+    r"\bpav(e|es|ed|ing) the way\b", r"\blandscape\b", r"\breshap(e|es|ed|ing)\b", r"\btransform(s|ed|ing|ative)?\b",
+    r"\biconic\b", r"\bchampion(s|ed|ing)\b", r"\benvision(s|ed|ing)?\b", r"\bambitious\b", r"\bbroaden(s|ed|ing)?\b",
+    r"\bleading force\b", r"\bfor (decades|years|generations) to come\b", r"\bin dramatic fashion\b",
+    r"\bmassive success\b", r"\brevolutioni[sz](e|es|ed|ing)\b", r"\brevolution\b", r"\bcement(s|ed|ing)\b",
+    r"\blegacy\b", r"\benduring\b", r"\bgroundbreaking\b", r"\binnovati(ve|on|ons)\b", r"\bpivotal\b",
+    r"\bcrucial\b", r"\bsignificant(ly)?\b", r"\bplay(s|ed|ing)? an? (major|key|central|vital|crucial|pivotal|important) role\b",
+    r"\bfoster(s|ed|ing)?\b", r"\bshowcas(e|es|ed|ing)\b", r"\bdelv(e|es|ed|ing)\b", r"\btapestry\b", r"\btestament\b",
+    r"\bunderscor(e|es|ed|ing)\b", r"\bmultifaceted\b", r"\bintricate\b", r"\brealm\b", r"\bnavigat(e|es|ed|ing)\b",
+    r"\bleverag(e|es|ed|ing)\b", r"\brobust\b", r"\bseamless(ly)?\b", r"\bholistic\b", r"\bnuanced?\b", r"\bvibrant\b",
+    r"\bprofound(ly)?\b", r"\bembark(s|ed|ing)?\b", r"\bever-(evolving|changing)\b", r"\bthroughout history\b",
+    r"\bit is (important|worth|crucial) (to note|noting)\b", r"\bin today's\b", r"\bserves as\b", r"\bstands as\b",
+    r"\bnot only\b", r"\ba (wide|rich|diverse) (range|array|variety)\b", r"\bdemonstrat(e|es|ed|ing)\b",
+    r"\bestablish(es|ed|ing)?\b", r"\bsteadily\b", r"\bfar easier\b", r"\bcomplex (issue|challenge)\b",
+    r"\bsustainable\b", r"\bfuture generations\b", r"\bfacing the world\b", r"\bacross the globe\b",
+    r"\baround the world\b", r"\bpromptly\b", r"\bensur(e|es|ed|ing)\b", r"\bfinali[sz](e|es|ed|ing)\b",
+    r"\bregarding\b", r"\boutstanding questions\b", r"\bcontinued (hard work|support)\b", r"\bcollaborat(e|ion|ive)\b",
+    r"\bfurther\b", r"\bprovide an? (quick )?update\b", r"\bfeel free to\b", r"\bsmooth (handover|transition)\b",
+    r"\bin the (late|early|mid)[- ]\d{4}s\b", r"\bthe very next day\b", r"\bmarking the (beginning|start|end)\b",
+    r"\bheavily\b", r"\bnotabl(e|y)\b", r"\bremarkabl(e|y)\b", r"\bunprecedented\b", r"\bplayed a\b", r"\bkey\b",
+    r"\bfoundation\b", r"\bexplosion of\b", r"\beveryday life\b", r"\bpotential\b", r"\bconsequently\b",
+]
+_TRANSITIONS = ("However", "Moreover", "Furthermore", "Additionally", "Ultimately", "In conclusion", "Overall",
+                "Meanwhile", "Consequently", "As a result", "In addition", "Today", "Instead", "Notably",
+                "Importantly", "Thus", "Therefore", "In summary", "At the time", "At the same time",
+                "Throughout", "Following", "By the", "Over time", "Since then", "In 19", "In 20", "To ensure")
+_CONCLUDERS = ("Ultimately", "In conclusion", "Overall", "Today", "In summary", "In the end", "To conclude")
+_CONTRACTION = re.compile(r"\b\w+(n't|'re|'ve|'ll|'d|'m)\b|\b(it|that|there|what|here|he|she|who|let|i)'s\b|"
+                          r"\b(dont|didnt|cant|wont|isnt|wasnt|thats|im|ive|theyre|youre)\b", re.IGNORECASE)
+_FIRST_PERSON = re.compile(r"\b(I|I'm|I've|my|me|we|our|us)\b")
+_ING_TAIL = re.compile(r", (?!including\b|according\b|during\b)[a-z]+ing\b")
+
+
+def ai_report(text):
+    """
+    Score how much a piece of writing reads like typical AI text (0-100), from
+    many habits at once, and mark the sentences that show them. This is a guide
+    for a conversation, not proof: careful human writers can score high and
+    edited AI text can score low.
+    """
+    sents = sentences_of(text)
+    words = re.findall(r"[A-Za-z][A-Za-z'’-]*", text)
+    n = max(1, len(words))
+    out = []
+    vocab_total = trans_total = tail_total = 0
+    for a, b, sent in sents:
+        reasons = []
+        hits = []
+        for pattern in _AI_STYLE:
+            m = re.search(pattern, sent, re.IGNORECASE)
+            if m:
+                hits.append(m.group(0).lower())
+        for pattern, name in _AI_PHRASES:                 # the classic giveaways count double
+            if re.search(pattern, sent, re.IGNORECASE) and name.strip('"') not in " ".join(hits):
+                hits.append(name.strip('"'))
+        score = min(3.0, 0.9 * len(hits))
+        if hits:
+            reasons.append("polished wording: " + ", ".join(f"“{h}”" for h in hits[:4]))
+        vocab_total += len(hits)
+        if sent.startswith(_TRANSITIONS):
+            score += 1.0
+            trans_total += 1
+            reasons.append("starts with a formal linking phrase")
+        if _ING_TAIL.search(sent) or re.search(r", which (helped|allowed|made|led|established|became)", sent):
+            score += 0.9
+            tail_total += 1
+            reasons.append("“…, doing something” add-on clause")
+        n_words = len(sent.split())
+        if 18 <= n_words <= 45:
+            score += 0.5
+            reasons.append(f"long, smooth sentence ({n_words} words)")
+        long_words = sum(1 for w in re.findall(r"[A-Za-z]+", sent) if len(w) >= 9)
+        if long_words >= 3:
+            score += 0.5
+            reasons.append(f"{long_words} long words")
+        if "—" in sent:
+            score += 0.8
+            reasons.append("long dash (—)")
+        # General patterns of polished writing, not tied to particular words.
+        if re.search(r"\bsuch as\b|\bin particular\b|\bparticularly\b", sent, re.IGNORECASE):
+            score += 0.6
+            reasons.append("“such as / particularly” examples")
+        if re.search(r"\b[\w-]+(?: [\w-]+){0,3}, [\w-]+(?: [\w-]+){0,3}, (and|or) \w", sent):
+            score += 0.7
+            reasons.append("neat list of three (with a comma before “and”)")
+        if re.search(r"\bboth\b [\w-]+(?: [\w-]+){0,2} and\b", sent, re.IGNORECASE):
+            score += 0.4
+            reasons.append("“both … and …”")
+        if re.match(r"(As|While|Although|With|By|Through|After|Before|Since|When|From|Despite|Whether|Once|"
+                    r"Inspired|Driven|Known|Built|Founded|Designed|Joining|Engaging|In addition|Just as)\b[^,]{3,70},",
+                    sent):
+            score += 0.6
+            reasons.append("opens with a lead-in phrase")
+        out.append({"start": a, "end": b, "text": sent, "reasons": reasons, "score": score})
+
+    # Whole-piece habits.
+    lengths = [len(s["text"].split()) for s in out] or [0]
+    mean = sum(lengths) / len(lengths)
+    spread = (sum((x - mean) ** 2 for x in lengths) / len(lengths)) ** 0.5
+    cv = spread / mean if mean else 1
+    contractions = len(_CONTRACTION.findall(text)) * 100 / n
+    first_person = len(_FIRST_PERSON.findall(text)) * 100 / n
+    mistakes = sum(1 for d in check_text(text) if d["level"] <= 4 and d["suggestion"] is not None)
+    paras = [p for p in re.split(r"\n\s*\n", text.strip()) if len(p.split()) > 12]
+    last = paras[-1].strip() if paras else ""
+    avg_word = sum(len(w) for w in words) / n
+    clamp = lambda x: max(0.0, min(1.0, x))
+    parts = {
+        "polished": (0.20, clamp(vocab_total * 100 / n / 2.0)),
+        "contractions": (0.13, clamp(1 - contractions / 1.2)),
+        "sentence length": (0.12, clamp((mean - 12) / 9)),
+        "even sentences": (0.06, clamp((0.65 - cv) / 0.35)),
+        "linking words": (0.09, clamp(trans_total / max(1, len(out)) / 0.2)),
+        "add-on clauses": (0.10, clamp(tail_total / max(1, len(out)) / 0.2)),
+        "impersonal": (0.08, clamp(1 - first_person / 2.5)),
+        "no mistakes": (0.09, (1.0 if mistakes == 0 else clamp(1 - mistakes / 3)) if n >= 120 else 0.5),
+        "essay shape": (0.05, 1.0 if len(paras) >= 3 and last.startswith(_CONCLUDERS) else (0.5 if len(paras) >= 3 else 0)),
+        "long words": (0.08, clamp((avg_word - 4.3) / 0.7)),
+    }
+    score = round(100 * sum(w * v for w, v in parts.values()))
+    # A sentence needs a bit less to be marked when the whole piece reads as AI.
+    yellow = 1.1 if score >= 65 else (1.3 if score >= 45 else 1.6)
+    for x in out:
+        x["strength"] = 2 if x["score"] >= yellow + 1.2 else (1 if x["score"] >= yellow else 0)
+        x["signals"] = x.pop("reasons") if x["strength"] else []
+    explain = {
+        "polished": f"{vocab_total} polished, formal phrases",
+        "contractions": "no contractions (didn't, it's…)" if contractions == 0 else f"few contractions ({contractions:.1f} per 100 words)",
+        "sentence length": f"long sentences (about {mean:.0f} words each)",
+        "even sentences": "sentences are all a similar length",
+        "linking words": f"{trans_total} sentences start with a formal linking phrase",
+        "add-on clauses": f"{tail_total} sentences end with a “…, doing something” add-on",
+        "impersonal": "no “I” or personal voice",
+        "no mistakes": "no spelling, grammar or punctuation slips at all",
+        "essay shape": "neat paragraphs ending with an “Ultimately / In conclusion” wrap-up",
+        "long words": f"lots of long words (average {avg_word:.1f} letters)",
+    }
+    reasons = [explain[k] for k, (w, v) in sorted(parts.items(), key=lambda kv: -kv[1][0] * kv[1][1]) if v >= 0.6]
+    verdict = "High" if score >= 65 else ("Medium" if score >= 45 else "Low")
+    return {"score": score, "verdict": verdict, "reasons": reasons, "sentences": out, "words": n,
+            "short": n < 120}
+
+
 def check_text_quick_has_mistakes(text):
     return any(d["level"] <= 2 for d in check_text(text))
 
@@ -1016,6 +1161,272 @@ def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
     if final.stop_reason == "max_tokens":
         result += "\n\n[The rewrite was cut off because it got too long.]"
     return result
+
+
+# --------------------------------------------------------------------------- #
+#  Connect to the Claude desktop app (an MCP connector). Claude writes the
+#  text on your own Claude plan, then asks Human Typer to type it.
+#
+#    Claude app  --(MCP, "Human Typer --mcp")-->  connector
+#    connector   --(private link on this computer)-->  the Human Typer window,
+#                                                     which does the typing
+# --------------------------------------------------------------------------- #
+
+BRIDGE_PORT = int(os.environ.get("HUMAN_TYPER_BRIDGE_PORT", "47321"))
+
+
+def bridge_token():
+    """A secret only this computer's Human Typer and its connector know."""
+    cfg = load_config()
+    if not cfg.get("bridge_token"):
+        import secrets
+        cfg["bridge_token"] = secrets.token_hex(16)
+        save_config(cfg)
+    return cfg["bridge_token"]
+
+
+def start_bridge(handle):
+    """Listen on 127.0.0.1 (this computer only) for jobs from the connector.
+    handle(path, payload) -> dict. Returns the server, or None if another
+    Human Typer window already has the link."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import hmac
+    token = bridge_token()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _reply(self, code, data):
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _serve(self, payload):
+            if not hmac.compare_digest(self.headers.get("X-Human-Typer-Token", ""), token):
+                return self._reply(403, {"ok": False, "message": "Wrong token."})
+            try:
+                self._reply(200, handle(self.path, payload))
+            except Exception as exc:
+                self._reply(500, {"ok": False, "message": str(exc)})
+
+        def do_GET(self):
+            self._serve({})
+
+        def do_POST(self):
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except ValueError:
+                return self._reply(400, {"ok": False, "message": "Bad request."})
+            self._serve(payload)
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", BRIDGE_PORT), Handler)
+    except OSError:
+        return None
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _launch_app():
+    """Open the Human Typer window (used when Claude asks to type and it isn't open)."""
+    import subprocess
+    exe = sys.executable
+    if getattr(sys, "frozen", False):
+        if IS_MAC and ".app/Contents/MacOS/" in exe:
+            subprocess.Popen(["open", exe.split(".app/Contents/MacOS/")[0] + ".app"])
+        elif sys.platform == "win32":
+            subprocess.Popen([exe], creationflags=0x00000008 | 0x00000200)   # detached, own process group
+        else:
+            subprocess.Popen([exe], start_new_session=True)
+    else:
+        subprocess.Popen([exe, os.path.abspath(__file__)], start_new_session=True)
+
+
+def bridge_call(path, payload=None, launch=True):
+    """Send a job to the Human Typer window, opening it first if needed."""
+    import urllib.request
+    import urllib.error
+    data = json.dumps(payload or {}).encode("utf-8")
+    deadline = time.monotonic() + 20
+    launched = False
+    while True:
+        req = urllib.request.Request(f"http://127.0.0.1:{BRIDGE_PORT}{path}", data=data if payload is not None else None,
+                                     headers={"X-Human-Typer-Token": bridge_token(),
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as exc:
+            try:
+                return json.load(exc)
+            except Exception:
+                return {"ok": False, "message": f"Human Typer replied with an error ({exc.code})."}
+        except (urllib.error.URLError, OSError):
+            if not launch:
+                return {"ok": False, "message": "Human Typer isn't open."}
+            if not launched:
+                _launch_app()
+                launched = True
+            if time.monotonic() > deadline:
+                return {"ok": False, "message": "Couldn't open Human Typer. Please open it, then try again."}
+            time.sleep(0.5)
+
+
+def claude_config_path():
+    if IS_MAC:
+        return os.path.expanduser("~/Library/Application Support/Claude/claude_desktop_config.json")
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Claude", "claude_desktop_config.json")
+    return os.path.expanduser("~/.config/Claude/claude_desktop_config.json")
+
+
+def mcp_command():
+    """How the Claude app should start the connector: this app with --mcp."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--mcp"]
+    return [sys.executable, os.path.abspath(__file__), "--mcp"]
+
+
+def connect_claude(remove=False):
+    """Add (or remove) Human Typer in the Claude desktop app's connector settings.
+    Keeps everything else in that file, and saves a backup first."""
+    path = claude_config_path()
+    cfg = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        try:
+            cfg = json.loads(text) if text.strip() else {}
+        except ValueError:
+            raise RuntimeError("The Claude app's settings file isn't valid JSON, so I didn't touch it:\n" + path)
+        with open(path + ".backup", "w", encoding="utf-8") as f:
+            f.write(text)
+    servers = cfg.setdefault("mcpServers", {})
+    if remove:
+        servers.pop("human-typer", None)
+    else:
+        cmd = mcp_command()
+        servers["human-typer"] = {"command": cmd[0], "args": cmd[1:]}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    return path
+
+
+def _fix_windows_stdio():
+    """A windowed Windows app may start without Python's stdin/stdout even when
+    the Claude app gives it pipes; reconnect them so the connector can talk."""
+    if sys.platform != "win32" or (sys.stdin is not None and sys.stdout is not None):
+        return
+    import ctypes
+    import io
+    import msvcrt
+    k32 = ctypes.windll.kernel32
+    for handle_id, name, mode in ((-10, "stdin", "rb"), (-11, "stdout", "wb")):
+        if getattr(sys, name) is None:
+            fd = msvcrt.open_osfhandle(k32.GetStdHandle(handle_id), 0)
+            raw = os.fdopen(fd, mode, buffering=0)
+            setattr(sys, name, io.TextIOWrapper(raw, encoding="utf-8", newline="\n", write_through=True))
+
+
+def _apa_entry(*args):
+    return apa_reference(*args)
+
+
+def run_mcp():
+    """The connector the Claude app talks to (MCP over stdin/stdout)."""
+    _fix_windows_stdio()
+    from mcp.server.mcpserver import MCPServer
+    server = MCPServer(
+        "Human Typer",
+        instructions=("Human Typer types text into the user's own document (for example Word) key by key, "
+                      "like a person, at the speed they choose. Write or edit the text with the user first, "
+                      "then call type_text. Tell the user to click into their document during the countdown. "
+                      "check_writing, fix_apa_citations and apa_reference help with school and work writing."),
+    )
+
+    @server.tool()
+    def type_text(text: str, wpm: int = 60, random_speed_min: int = 0, random_speed_max: int = 0,
+                  typos_percent: float = -1, countdown_seconds: int = 5) -> str:
+        """Type text into whatever the user clicks into (e.g. a Word document), like a person typing.
+
+        Human Typer shows a countdown first; the user clicks into their document before it ends.
+        wpm: words per minute. random_speed_min/max: give both to let the speed wander between them.
+        typos_percent: how often to make (and fix) typos, 0-8; leave as -1 to use the app's setting.
+        """
+        job = {"text": text, "wpm": wpm, "countdown": countdown_seconds}
+        if random_speed_min > 0 and random_speed_max > 0:
+            job["random_speed"] = [random_speed_min, random_speed_max]
+        if typos_percent >= 0:
+            job["typos"] = typos_percent
+        return bridge_call("/type", job).get("message", "")
+
+    @server.tool()
+    def typing_status() -> str:
+        """How far Human Typer has got with the current typing."""
+        return bridge_call("/status", launch=False).get("message", "")
+
+    @server.tool()
+    def stop_typing() -> str:
+        """Stop Human Typer typing straight away."""
+        return bridge_call("/stop", {}, launch=False).get("message", "")
+
+    @server.tool()
+    def check_writing(text: str, level: int = 3) -> str:
+        """Check writing for typos, Australian spelling, grammar and punctuation, and return a fixed copy.
+
+        level 1-5: 2 = spelling and typos, 3 = + grammar, 4 = + punctuation and capitals, 5 = + style.
+        """
+        level = max(1, min(5, level))
+        issues = check_text(text)
+        fixed, done, left = apply_fixes(text, issues, level)
+        lines = [f'- "{d["original"]}" -> "{d["suggestion"]}" ({d["type"]})' if d["suggestion"] else
+                 f'- {d["type"]}: {d["note"]}' for d in issues if d["level"] <= level]
+        return (f"{len(done)} fixed, {left} left (above level {level}).\n" + "\n".join(lines) +
+                f"\n\nFixed text:\n{fixed}")
+
+    @server.tool()
+    def ai_style_check(text: str) -> str:
+        """Score (0-100) how much writing shows habits typical of AI text, with reasons and the sentences
+        that show them most. A hint for a conversation, not proof of who wrote it."""
+        r = ai_report(text)
+        top = sorted((x for x in r["sentences"] if x["strength"]), key=lambda x: -x["score"])[:5]
+        return (f"AI-style score {r['score']}/100 ({r['verdict']}).\nReasons: " + "; ".join(r["reasons"][:6]) +
+                "\nMost AI-like sentences:\n" + "\n".join(f'- "{x["text"]}" ({", ".join(x["signals"][:3])})' for x in top) +
+                "\nNote: careful human writers can score high and edited AI text can score low.")
+
+    @server.tool()
+    def fix_apa_citations(text: str) -> str:
+        """Tidy the in-text citations in a piece of writing into APA 7 form."""
+        new, changes = fix_in_text_citations(text)
+        return "\n".join(f"- {a} -> {b}" for a, b in changes) + f"\n\nFixed text:\n{new}" if changes else \
+            "The in-text citations already look like APA 7 (or there aren't any)."
+
+    @server.tool()
+    def apa_reference(authors: str, year: str = "", title: str = "", site: str = "", url: str = "",
+                      organisation: bool = False, book: bool = False) -> str:
+        """Make an APA 7 in-text citation and reference list entry for a source.
+
+        authors: "John Smith; Kate Jones" (people) or an organisation name with organisation=true.
+        """
+        return (f"In-text: {apa_in_text(authors, year, organisation)}\n"
+                f"Reference: {_apa_entry(authors, year, title, site, url, organisation, 'book' if book else 'website')}")
+
+    @server.prompt()
+    def humanise(text: str, audience: str = "3 Team professional", format: str = "Keep Original") -> str:
+        """Rewrite text so it sounds natural for an audience and format (Humaniser).
+
+        audience: 1 Year 8, 2 General audience, 3 Team professional, 4 Executive, 5 Finance analyst.
+        format: Keep Original, Meeting Notes, PowerPoint Slides, Speaker Notes.
+        """
+        return HUMANISER_PROMPT + "\n\n" + humaniser_request(text, audience, format)
+
+    server.run("stdio")
 
 
 def parse_typo_targets(text):
@@ -2050,18 +2461,18 @@ class App:
         human.columnconfigure(1, weight=1)
 
         # Start options
-        opts = ttk.Frame(bottom)
+        opts = self.opts_row = ttk.Frame(bottom)
         opts.pack(fill="x", **pad)
         ttk.Label(opts, text="Seconds to click into Word:").pack(side="left")
         ttk.Spinbox(opts, from_=1, to=60, textvariable=self.delay, width=4).pack(side="left", padx=6)
         ttk.Checkbutton(opts, text="Keep this window on top", variable=self.on_top).pack(side="right")
-        bg = ttk.Frame(bottom)
+        bg = self.bg_row = ttk.Frame(bottom)
         bg.pack(fill="x", padx=12, pady=(0, 4))
         self.bg_check = ttk.Checkbutton(
             bg, text="Type in the background (Word only: keep using your computer while it types)",
             variable=self.background, state="normal" if (IS_MAC or sys.platform == "win32") else "disabled")
         self.bg_check.pack(side="left")
-        pin_row = ttk.Frame(bottom)
+        pin_row = self.pin_row = ttk.Frame(bottom)
         pin_row.pack(fill="x", padx=32, pady=(0, 4))
         self.pin_check = ttk.Checkbutton(
             pin_row, text="Pin it to one spot (keeps typing there even if you click somewhere else in Word)",
@@ -2168,8 +2579,16 @@ class App:
                                             command=lambda n=name: self.set_theme(n))
         self.theme_menu.add_separator()
         self.theme_menu.add_checkbutton(label="Animations", variable=self.animations, command=self._theme_save)
+        self.simple = tk.BooleanVar(value=cfg.get("simple", False))
+        self.theme_menu.add_checkbutton(label="Simple view", variable=self.simple, command=self._apply_simple)
+        self.theme_menu.add_separator()
+        self.theme_menu.add_command(label="Connect to Claude…", command=self._connect_claude_ui)
+        self.claude_menu = tk.Menu(self.root, tearoff=False)
+        self.claude_menu.add_command(label="Connect to the Claude app…", command=self._connect_claude_ui)
+        self.claude_menu.add_command(label="Disconnect from the Claude app", command=lambda: self._connect_claude_ui(True))
         menubar = tk.Menu(self.root)
         menubar.add_cascade(label="Themes", menu=self.theme_menu)
+        menubar.add_cascade(label="Claude", menu=self.claude_menu)
         self._menubar = menubar
         self.root.configure(menu=menubar)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -2190,6 +2609,12 @@ class App:
         self.rw_btn.configure(style="Accent.TButton")
         self._progress_shown = 0.0
         self._apply_theme(self.theme_name.get())
+        self._tab_pages = list(self.tabs.tabs())
+        self._apply_simple(save=False)
+        # The private link the Claude connector uses to hand over text to type.
+        self._bridge_jobs = []
+        self._bridge_lock = threading.Lock()
+        self.bridge = start_bridge(self._bridge_handle)
         if self._animating():
             self._fade_window(0.0, 1.0, 450)       # fade in when the app opens
 
@@ -2376,16 +2801,18 @@ class App:
             f.configure(size=(f.cget("size") or 10) + 1, weight="bold")
         except tk.TclError:
             f = tkfont.nametofont("TkDefaultFont")
-        x, self._tab_x = 4, []
+        x, self._tab_x = 4, {}
         current = self.tabs.index("current")
         for i, name in enumerate(TAB_NAMES):
+            if self.tabs.tab(i, "state") == "hidden":
+                continue
             w = f.measure(name)
             colour = pal["text"] if i == current else pal["muted"]
             item = c.create_text(x + 10, 20, text=name, anchor="w", font=f, fill=colour, tags=(f"tab{i}", "tab"))
             c.tag_bind(item, "<Button-1>", lambda e, i=i: self.tabs.select(i))
             c.tag_bind(item, "<Enter>", lambda e, it=item: self._tab_hover(it, True))
             c.tag_bind(item, "<Leave>", lambda e, it=item: self._tab_hover(it, False))
-            self._tab_x.append((x + 10, x + 10 + w))
+            self._tab_x[i] = (x + 10, x + 10 + w)
             x += w + 30
         a, b = self._tab_x[current]
         self._underline = c.create_line(a + 2, 38, b - 2, 38, fill=pal["accent"], width=4, capstyle="round")
@@ -2671,7 +3098,7 @@ class App:
         if spin is not None:
             start, extent = spin, 100
         else:
-            start, extent = 90, -3.6 * max(0.0, min(100.0, pct or 0))
+            start, extent = 90, max(-359.9, -3.6 * max(0.0, min(100.0, pct or 0)))   # Tk draws -360 as nothing
         if abs(extent) > 0.5:
             c.create_arc(pad, pad, s - pad, s - pad, start=start, extent=extent, style="arc",
                          outline=pal["accent"], width=w)
@@ -2738,6 +3165,110 @@ class App:
         else:
             self.root.destroy()
 
+    # ----- Simple view -----
+    def _apply_simple(self, save=True):
+        """Simple view: just the text, the speed and Start/Stop."""
+        on = self.simple.get()
+        if save:
+            cfg = load_config()
+            cfg["simple"] = on
+            save_config(cfg)
+        for i, page in enumerate(self._tab_pages):
+            if i == 0:
+                continue
+            if on:
+                self.tabs.hide(page)
+            else:
+                self.tabs.add(page)
+        if on:
+            self.tabs.select(0)
+        rows = [self.human_frame, self.opts_row, self.bg_row, self.pin_row]
+        if not hasattr(self, "_row_packing"):
+            self._row_packing = {str(w): w.pack_info() for w in rows}
+        for w in rows:
+            if on:
+                w.pack_forget()
+            elif not w.winfo_manager():
+                info = {k: v for k, v in self._row_packing[str(w)].items() if k != "in"}
+                w.pack(before=self.ctl, **info)
+        if getattr(self, "_pal", None):
+            self._layout_tabbar(animate=False)
+
+    # ----- Claude connector -----
+    def _connect_claude_ui(self, remove=False):
+        try:
+            path = connect_claude(remove)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Couldn't update the Claude app's settings.\n\n{exc}")
+            return
+        if remove:
+            messagebox.showinfo(APP_NAME, "Disconnected. Quit and reopen the Claude app to finish.")
+            return
+        warn = ""
+        if "/AppTranslocation/" in sys.executable or "/Downloads/" in sys.executable:
+            warn = ("\n\nFirst, though: move Human Typer into your Applications folder and connect again "
+                    "from there, or the Claude app won't be able to find it later.")
+        messagebox.showinfo(APP_NAME,
+            "Connected! Human Typer is now a connector in the Claude desktop app."
+            f"{warn}\n\n1. Quit the Claude app completely and open it again."
+            "\n2. In a chat, ask Claude to write something, then say: \"type it with Human Typer at 60 WPM\"."
+            "\n3. When Human Typer counts down, click into your document."
+            "\n\nYou can also ask Claude to check your writing, fix APA references, or use the "
+            "'humanise' prompt from the + menu. It all runs on your normal Claude plan."
+            f"\n\n(Settings saved in: {path}; a backup of the old file is next to it.)")
+
+    def _bridge_handle(self, path, payload):
+        """Jobs from the Claude connector (this runs on the link's own thread)."""
+        t = self.typist
+        if path == "/type":
+            text = str(payload.get("text", "")).replace("\r\n", "\n")
+            if not text.strip():
+                return {"ok": False, "message": "There was no text to type."}
+            if t is None:
+                return {"ok": False, "message": "Human Typer can't press keys on this computer: " + self.typist_error}
+            if t.busy:
+                return {"ok": False, "message": "Human Typer is already typing. Stop it first (stop_typing)."}
+            countdown = max(1, min(60, int(payload.get("countdown", 5) or 5)))
+            with self._bridge_lock:
+                self._bridge_jobs.append(("type", dict(payload, text=text, countdown=countdown)))
+            stop = "press Stop in Human Typer" if IS_MAC else "press Esc"
+            return {"ok": True, "message": f"Human Typer got {len(text.split())} words and starts typing in "
+                                           f"{countdown} seconds. Tell the user to click into their document now "
+                                           f"(to stop: {stop}, or push the mouse into the top-left corner)."}
+        if path == "/stop":
+            with self._bridge_lock:
+                self._bridge_jobs.append(("stop", {}))
+            return {"ok": True, "message": "Stopped." if t and t.busy else "Human Typer wasn't typing."}
+        if path == "/status":
+            if t is None or not t.total_chars:
+                return {"ok": True, "message": "Human Typer is open and not typing."}
+            return {"ok": True, "message": f"{t.state}: {t.done_chars} of {t.total_chars} characters typed."}
+        return {"ok": False, "message": "Unknown request."}
+
+    def _bridge_pump(self):
+        with self._bridge_lock:
+            jobs, self._bridge_jobs = self._bridge_jobs, []
+        for kind, job in jobs:
+            if kind == "stop":
+                self._stop()
+                continue
+            self.tabs.select(0)
+            self._replace(self.text, job["text"])
+            self._update_info()
+            self.wpm.set(max(1, min(2000, int(job.get("wpm", 60) or 60))))
+            rs = job.get("random_speed")
+            self.random_speed.set(bool(rs))
+            if rs:
+                self.wpm_lo.set(int(rs[0]))
+                self.wpm_hi.set(int(rs[1]))
+            if job.get("typos") is not None:
+                self.typos.set(round(max(0.0, min(8.0, float(job["typos"]))), 1))
+            self.root.deiconify()
+            self.root.lift()
+            self._start(countdown=job["countdown"])
+            if self.typist and self.typist.busy:
+                self.status.set(f"✨ Claude sent {len(job['text'].split())} words. Click into your document now…")
+
     def _theme_window(self, win):
         """Pop-up windows follow the theme too."""
         if not hasattr(self, "_classic_defaults"):
@@ -2763,6 +3294,8 @@ class App:
         if not pal or not self._tab_x:
             return
         i = self.tabs.index("current")
+        if i not in self._tab_x:
+            return
         for k in range(len(TAB_NAMES)):
             self.tabbar.itemconfigure(f"tab{k}", fill=pal["text"] if k == i else pal["muted"])
         (a0, b0), (a1, b1) = self._underline_at, self._tab_x[i]
@@ -3424,26 +3957,36 @@ class App:
             return
         self._clear_check_marks()
         self._checked_text = self.check_text.get("1.0", "end-1c")
-        sents, notes = ai_signals(part)
+        report = ai_report(part)
+        sents = report["sentences"]
         flagged = [x for x in sents if x["strength"]]
-        for x in sents:
-            if x["strength"]:
-                a, b = offset + x["start"], offset + x["end"]
-                self.check_text.tag_add(f"ai{x['strength']}", self._idx(a), self._idx(b))
-                short = x["text"] if len(x["text"]) < 40 else x["text"][:38] + "…"
-                self.check_list.insert("end", f"“{short}”")
+        self.check_list.insert("end", f"AI-style score: {report['score']}/100 ({report['verdict']})")
+        self.check_rows.append((offset, offset + len(part)))
+        for reason in report["reasons"][:6]:
+            self.check_list.insert("end", f"   • {reason}")
+            self.check_rows.append((offset, offset + len(part)))
+        if flagged:
+            self.check_list.insert("end", "")
+            self.check_rows.append((offset, offset))
+        for x in flagged:
+            a, b = offset + x["start"], offset + x["end"]
+            self.check_text.tag_add(f"ai{x['strength']}", self._idx(a), self._idx(b))
+            short = x["text"] if len(x["text"]) < 40 else x["text"][:38] + "…"
+            self.check_list.insert("end", f"“{short}”")
+            self.check_rows.append((a, b))
+            for sig in x["signals"][:4]:
+                self.check_list.insert("end", f"     • {sig}")
                 self.check_rows.append((a, b))
-                for sig in x["signals"]:
-                    self.check_list.insert("end", f"     • {sig}")
-                    self.check_rows.append((a, b))
         self._fade_tags(self.check_text, {f"ai{x['strength']}" for x in flagged})
-        strong = sum(1 for x in flagged if x["strength"] == 2)
-        msg = (f"{len(flagged)} of {len(sents)} sentences have AI-style habits"
-               f"{f' ({strong} with several)' if strong else ''}. Yellow = one habit, orange = several.")
-        if notes:
-            msg += " " + " ".join(notes)
-        msg += (" Keep in mind: this only spots habits common in AI writing. Real people write like this too, "
-                "and AI text can avoid them, so use it to start a chat, not as proof.")
+        meaning = {"High": "lots of habits typical of AI writing",
+                   "Medium": "some habits typical of AI writing",
+                   "Low": "few habits typical of AI writing"}[report["verdict"]]
+        msg = (f"AI-style score {report['score']}/100 ({report['verdict']}: {meaning}). "
+               f"{len(flagged)} of {len(sents)} sentences highlighted (yellow = some habits, orange = many). ")
+        if report["short"]:
+            msg += "This is a short piece, so the score is less reliable. "
+        msg += ("This can't prove who wrote something: careful writers (including strong students) can score "
+                "Medium or High, and edited AI text can score Low. Use it to start a conversation, not as proof.")
         self.check_summary.set(msg)
 
     # ----- boxes -----
@@ -4182,10 +4725,15 @@ class App:
                 self.start_btn.configure(state="normal")
                 self.pause_btn.configure(state="disabled")
                 self.stop_btn.configure(state="disabled")
+        if getattr(self, "_bridge_jobs", None):
+            self._bridge_pump()             # text sent by Claude
         self.root.after(100, self._poll)
 
 
 def main():
+    if "--mcp" in sys.argv:               # started by the Claude app as a connector
+        run_mcp()
+        return
     if "--selftest" in sys.argv:          # used by the build check: are all the parts inside the app?
         def say(msg):                     # a windowed Windows app has nowhere to print
             if sys.stdout is not None:
@@ -4193,6 +4741,8 @@ def main():
         import anthropic
         import docx
         import spellchecker
+        from mcp.server.mcpserver import MCPServer
+        MCPServer("selftest")
         client = anthropic.Anthropic(api_key="sk-ant-selftest-not-a-real-key")
         assert check_text("i went to teh shop")
         if "--net" in sys.argv:           # can the app make a secure connection to Claude?
