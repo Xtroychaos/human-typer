@@ -17,6 +17,15 @@ the text out key by key, like a person would.
   commas and full stops, waits a bit longer at new lines, and sometimes stops to "think".
 - **Typos it fixes itself.** It sometimes hits a key next to the right one, notices, presses Backspace, and types
   the right letter. Sometimes it only notices one letter later. Set this to 0 if you don't want any typos.
+- **Choose what it messes up.** In **Always mess up**, list words and letters, like `the, because, e`. Those words get
+  a mistake every time ("teh", "becuase") and those letters about half the time. With **Fix them** ticked, it notices
+  and fixes them like the normal typos; untick it to leave the mistakes in the finished text.
+- **✨ Natural tone.** Switch it on to rewrite the text in the box so it reads like everyday writing (handy for emails
+  and meeting notes): contractions ("do not" → "don't"), plainer words ("utilize" → "use", "Furthermore," → "Also,"),
+  simpler email phrases ("I hope this email finds you well" → "Hope you're doing well"), and normal punctuation instead
+  of long dashes and curly quotes. Read it over before typing. Switch it off to get your original back (or press
+  Ctrl+Z / Cmd+Z). It works offline with a list of rules, so it's a quick tidy-up, not a full rewrite in your voice:
+  changing a few things yourself makes it sound most like you.
 - **Speed stays exact.** Pauses and typos are included in the timing, so 60 WPM really takes as long as 60 WPM should
   (one "word" = 5 characters, the same rule typing tests use).
 - **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your
@@ -156,6 +165,96 @@ apps, browse, or type somewhere else.
   With the pin on, Word's AutoCorrect doesn't change the words as they appear, and Word doesn't scroll along
   with the typing. Untick it to type at Word's cursor instead.
 - Try not to type in that same document yourself, above the pinned spot, while it's typing.
+
+## Check tab: mistakes, AI-style habits and references
+
+**Check for mistakes.** Paste your writing (or press **Use the Text tab**). To check just one paragraph, select it
+first. Choose a **fix level** and press **✔ Check**:
+
+| Level | What it fixes |
+| --- | --- |
+| 1 | Only mistakes that make a sentence confusing (a person has to judge these, so the checker leaves them) |
+| 2 | + spelling, typos and doubled words ("teh", "the the"), in Australian spelling |
+| 3 | + grammar: "they was", "could of", their/there, your/you're, then/than, it's/its, to/too, a/an |
+| 4 | + punctuation, capital letters, missing apostrophes ("dont"), missing full stops, run-on sentences |
+| 5 | + very casual words ("gonna") and the same word used twice close together |
+
+Mistakes are highlighted and listed on the right (click one to find it). **Fix all at this level** fixes them and
+tells you how many it noticed but left because they're above your level. Things marked ⚑ are for you to decide.
+It works offline, so it won't catch everything a person would. **Send to the Text tab** when it's ready to type.
+
+**🤖 AI check.** Highlights sentences that have habits common in AI writing ("delve", "a rich tapestry",
+"plays a crucial role", "Furthermore," at the start, ", highlighting…" at the end, long dashes, sentences that are
+all the same length) and says why. Yellow means one habit, orange several. This can't prove anything: plenty of people
+write like this, and AI text can avoid all of it. Use it to start a conversation, not as a verdict.
+
+**📚 APA 7 references.**
+- **Fix in-text refs** tidies the citations already in the text: `(smith 2020)` → `(Smith, 2020)`,
+  `(smith, jones and lee 2019)` → `(Smith et al., 2019)`, `(Australian Government, no date)` →
+  `(Australian Government, n.d.)`, `(Smith 2020, p 12)` → `(Smith, 2020, p. 12)`.
+- **References…** opens a window where you type a source (people or an organisation, year, title, website or
+  publisher, link). It shows the APA 7 in-text citation and reference list entry as you type.
+  **Insert after sentence** puts the citation at the end of the sentence you clicked in, before the full stop.
+  **Add to reference list** collects sources, and **Put reference list at the end** adds them A to Z under
+  "References". Remember to put titles in italics in your document.
+
+## Rewrite tab (Humaniser)
+
+Rewrites text so it sounds like a person would naturally write or say it, for the audience and format you pick,
+while keeping what it says: names, dates, numbers, quotes and links stay as they are, and nothing new gets added.
+
+- **Audience:** 1 Year 8 · 2 General audience · 3 Team professional · 4 Executive · 5 Finance analyst
+- **Format:** Keep Original · Meeting Notes · PowerPoint Slides · Speaker Notes
+- **AI:** switch between **Local (free)** and **Claude** at the top of the tab. The app remembers your choice.
+
+Press **✨ Rewrite** and the result appears below as it's written (press **■ Stop** to stop). Edit it there, then
+**Copy** it, or send it to the **Text** tab to type or to the **Check** tab.
+
+**Always read the result before you use it**, especially names, numbers and dates. AI can make mistakes.
+
+### Local (free)
+
+Runs an AI model on your own computer: free, private, no account. Small models are good at making text sound natural
+but are less reliable than Claude at keeping every detail exactly right, and they're slower.
+
+1. Download **Ollama** from <https://ollama.com> and open it.
+2. In Terminal, download a model (about 2 GB):
+
+   ```bash
+   ollama pull llama3.2
+   ```
+
+   With 16 GB of memory or more, `ollama pull qwen2.5:7b` (about 5 GB) does noticeably better.
+3. In the Rewrite tab, press **Refresh** and pick the model.
+
+### Claude
+
+Better quality, especially for slides and for executive or finance wording. It needs a Claude API key from
+<https://console.anthropic.com> and is paid per use (a few cents per rewrite). Press **Claude key…** and paste it.
+The key is saved only on your computer (in `.human_typer.json` in your home folder, readable only by you). Keep it
+private like a password. The app uses Claude Opus 5.5.
+
+## Themes
+
+Pick a look from the **Themes** menu (in the menu bar, or the **🎨 Theme** button at the top right of the clean
+themes):
+
+- **Classic** – the original look, exactly as before.
+- **Clean Light**, **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal:
+  - **No square corners:** rounded buttons, text boxes, fields, cards, scrollbars and sliders, round radio buttons
+    and rounded checkboxes with a tick.
+  - **A progress ring** instead of a straight bar: it fills up with the percentage in the middle, and spins during
+    the countdown (with the seconds left) and while a rewrite is being written.
+  - **The window's title bar** (where close and minimise are) takes the theme's colour on Windows 11, and goes
+    dark or light to match on Windows 10 and Mac. The menu strip is tucked away (the 🎨 button has it).
+  - **Animations:** the window fades in and fades out when you close it; switching themes fades over; the tab
+    underline slides; buttons fade on hover; text boxes glow while you type in them; text the app fills in types
+    itself in; highlights and box borders fade; messages type themselves out; a ✓ message slides up when something
+    finishes; the Start button pulses during the countdown.
+  - **Speed** and **Make it look human** start folded, with a summary in the heading (like "Speed · 60 WPM").
+    Click a heading to open it.
+
+Untick **Animations** in the Themes menu to keep a clean theme without the motion. Your choice is remembered.
 
 ## Tips for Word
 

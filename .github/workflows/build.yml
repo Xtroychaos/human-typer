@@ -46,6 +46,7 @@ jobs:
           python -c "import tkinter; tkinter.Tcl(); print('tkinter ok')"
           python -c "import docx; d = docx.Document(); d.add_table(rows=2, cols=2); d.save('t.docx')"
           python -c "import human_typer as h; c = h.read_word_cells('t.docx'); assert len(c) == 4, c; print('word reader ok')"
+          python -c "import human_typer as h; i = h.check_text('i went to teh shop and we was tired'); print([d['suggestion'] for d in i]); assert any(d['suggestion'] == 'the' for d in i); print('checker ok')"
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
@@ -53,7 +54,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed \
             --name "Human Typer" --icon icon.png --add-data "icon.png;." \
             --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
-            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx \
+            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx --collect-data spellchecker --collect-data certifi \
             human_typer.py
           mkdir out
           cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
@@ -67,7 +68,7 @@ jobs:
             --name "Human Typer" --icon icon.png --add-data "icon.png:." \
             --osx-bundle-identifier com.xtroychaos.humantyper \
             --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin \
-            --hidden-import HIServices --hidden-import Foundation --collect-data docx \
+            --hidden-import HIServices --hidden-import Foundation --collect-data docx --collect-data spellchecker --collect-data certifi \
             human_typer.py
           # Lets the Mac ask "Human Typer wants to control Microsoft Word", then re-signs the app.
           plutil -insert NSAppleEventsUsageDescription -string \
@@ -76,6 +77,12 @@ jobs:
           codesign --force --deep --sign - "dist/Human Typer.app"
           mkdir out
           ditto -c -k --keepParent "dist/Human Typer.app" "out/HumanTyper-${{ matrix.label }}.zip"
+
+      - name: Self-test inside the built app (dictionary, Word reader, Claude library, secure connection)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then APP="dist/Human Typer.exe"; else APP="dist/Human Typer.app/Contents/MacOS/Human Typer"; fi
+          "$APP" --selftest --net
+          echo "self-test passed"
 
       - name: Quick check that the app starts
         run: |
