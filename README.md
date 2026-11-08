@@ -17,6 +17,15 @@ the text out key by key, like a person would.
   commas and full stops, waits a bit longer at new lines, and sometimes stops to "think".
 - **Typos it fixes itself.** It sometimes hits a key next to the right one, notices, presses Backspace, and types
   the right letter. Sometimes it only notices one letter later. Set this to 0 if you don't want any typos.
+- **Choose what it messes up.** In **Always mess up**, list words and letters, like `the, because, e`. Those words get
+  a mistake every time ("teh", "becuase") and those letters about half the time. With **Fix them** ticked, it notices
+  and fixes them like the normal typos; untick it to leave the mistakes in the finished text.
+- **✨ Natural tone.** Switch it on to rewrite the text in the box so it reads like everyday writing (handy for emails
+  and meeting notes): contractions ("do not" → "don't"), plainer words ("utilize" → "use", "Furthermore," → "Also,"),
+  simpler email phrases ("I hope this email finds you well" → "Hope you're doing well"), and normal punctuation instead
+  of long dashes and curly quotes. Read it over before typing. Switch it off to get your original back (or press
+  Ctrl+Z / Cmd+Z). It works offline with a list of rules, so it's a quick tidy-up, not a full rewrite in your voice:
+  changing a few things yourself makes it sound most like you.
 - **Speed stays exact.** Pauses and typos are included in the timing, so 60 WPM really takes as long as 60 WPM should
   (one "word" = 5 characters, the same rule typing tests use).
 - **Boxes.** Split your text into paragraphs, one per box, and type each one into a different place in your

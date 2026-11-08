@@ -54,7 +54,179 @@ for r, row in enumerate(_ROWS):
 BACKSPACE = "\b"
 
 
-def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed=None):
+# --------------------------------------------------------------------------- #
+#  Natural tone: make stiff, formal text read like everyday writing
+# --------------------------------------------------------------------------- #
+
+def _match_case(original, replacement):
+    if not replacement:
+        return replacement
+    if original.isupper() and len(original) > 1:
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+# Whole phrases that make emails and messages sound stiff -> plainer versions.
+_NATURAL_PHRASES = [
+    (r"I hope (this|my) (e-?mail|message) finds you well\.?", "Hope you're doing well."),
+    (r"I hope you are doing well\.?", "Hope you're doing well."),
+    (r"Please do not hesitate to (contact me|reach out|get in touch)( if you have any (further |other )?questions)?\.?",
+     "Let me know if you have any questions."),
+    (r"Do not hesitate to (contact me|reach out|get in touch)\.?", "Just let me know."),
+    (r"Feel free to reach out( to me)?", "Just let me know"),
+    (r"at your earliest convenience", "when you get a chance"),
+    (r"Thank you (very much )?for your time and consideration\.?", "Thanks for your time."),
+    (r"Thank you in advance for your (help|assistance|cooperation)\.?", "Thanks in advance."),
+    (r"I would like to take this opportunity to", "I want to"),
+    (r"I am writing to (inform you|let you know) that", "Just letting you know that"),
+    (r"I wanted to (reach out|touch base)", "I wanted to check in"),
+    (r"(It is|It's) (important|worth) (to note|noting) that ", ""),
+    (r"In today's fast-paced world, ", ""),
+    (r"In conclusion, ", "So, "),
+    (r"As an AI( language model)?, ", ""),
+    (r"in order to", "to"),
+    (r"prior to", "before"),
+    (r"a (wide )?(plethora|myriad|multitude) of", "lots of"),
+    (r"(plethora|myriad|multitude) of", "lots of"),
+    (r"(delve|dive deep) into", "dig into"),
+    (r"delves into", "digs into"),
+    (r"embark on", "start"),
+    (r"a testament to", "proof of"),
+    (r"with regard to|in regards? to", "about"),
+    (r"due to the fact that", "because"),
+    (r"at this point in time", "right now"),
+    (r"(Additionally|Furthermore|Moreover|In addition), ", "Also, "),
+    (r"(Therefore|Consequently|Thus), ", "So "),
+    (r"However, ", "But "),
+    (r"Certainly!", "Sure!"),
+    (r"Absolutely!", "Sure!"),
+]
+
+# Single fancy words -> everyday words (all the forms of each word).
+_NATURAL_WORDS = {
+    "utilize": "use", "utilizes": "uses", "utilized": "used", "utilizing": "using",
+    "utilise": "use", "utilises": "uses", "utilised": "used", "utilising": "using",
+    "commence": "start", "commences": "starts", "commenced": "started", "commencing": "starting",
+    "demonstrate": "show", "demonstrates": "shows", "demonstrated": "showed", "demonstrating": "showing",
+    "ensure": "make sure", "ensures": "makes sure", "ensured": "made sure", "ensuring": "making sure",
+    "assist": "help", "assists": "helps", "assisted": "helped", "assisting": "helping", "assistance": "help",
+    "showcase": "show", "showcases": "shows", "showcased": "showed", "showcasing": "showing",
+    "foster": "build", "fosters": "builds", "fostered": "built", "fostering": "building",
+    "regarding": "about", "approximately": "about", "subsequently": "then", "numerous": "lots of",
+    "comprehensive": "full", "crucial": "key", "pivotal": "key", "paramount": "really important",
+    "seamless": "smooth", "seamlessly": "smoothly", "robust": "solid", "meticulous": "careful",
+    "meticulously": "carefully", "endeavour": "try", "kindly": "please", "additionally": "also",
+    "furthermore": "also", "moreover": "also", "nevertheless": "still", "nonetheless": "still",
+    "commendable": "great", "invaluable": "really useful", "optimal": "best", "facilitate": "help with",
+}
+
+# Contractions. "is/are/will/would" only become short forms when a word follows,
+# so "I know who you are." stays as it is.
+_CONTRACTIONS = [
+    (r"do not", "don't"), (r"does not", "doesn't"), (r"did not", "didn't"),
+    (r"is not", "isn't"), (r"are not", "aren't"), (r"was not", "wasn't"), (r"were not", "weren't"),
+    (r"have not", "haven't"), (r"has not", "hasn't"), (r"had not", "hadn't"),
+    (r"will not", "won't"), (r"would not", "wouldn't"), (r"should not", "shouldn't"),
+    (r"could not", "couldn't"), (r"cannot", "can't"), (r"can not", "can't"),
+    (r"I am(?= \w)", "I'm"), (r"I have been", "I've been"), (r"we have been", "we've been"),
+    (r"I will(?= \w)", "I'll"), (r"we will(?= \w)", "we'll"), (r"you will(?= \w)", "you'll"),
+    (r"they will(?= \w)", "they'll"), (r"I would(?= \w)", "I'd"),
+    (r"you are(?= \w)", "you're"), (r"we are(?= \w)", "we're"), (r"they are(?= \w)", "they're"),
+    (r"it is(?= \w)", "it's"), (r"that is(?= \w)", "that's"), (r"there is(?= \w)", "there's"),
+    (r"what is(?= \w)", "what's"), (r"here is(?= \w)", "here's"), (r"let us(?= (start|begin|go|see|get|try|move|look))", "let's"),
+]
+
+
+def naturalize(text):
+    """
+    Rewrite stiff, formal text so it reads more like everyday writing:
+    contractions, plainer words, simpler email phrases, and ordinary
+    punctuation (no long dashes or curly quotes). Returns (new_text, changes).
+    """
+    changes = 0
+
+    def sub(pattern, repl, text, flags=re.IGNORECASE):
+        nonlocal changes
+
+        def fix(m):
+            out = repl(m) if callable(repl) else _match_case(m.group(0), repl)
+            return out
+
+        new, n = re.subn(pattern, fix, text, flags=flags)
+        changes += n
+        return new
+
+    # Punctuation people don't usually type by hand.
+    text = sub(r"\s*—\s*", " - ", text, 0)           # long dash
+    text = sub(r"(?<=\w)–(?=\w)", "-", text, 0)       # number ranges
+    text = sub(r"\s–\s", " - ", text, 0)
+    text = sub("[“”]", '"', text, 0)
+    text = sub("[‘’]", "'", text, 0)
+    text = sub("…", "...", text, 0)
+    text = sub(r"\*\*(.+?)\*\*", lambda m: m.group(1), text, 0)   # **bold** from chat apps
+    text = sub(r"(?m)^#{1,6} +", "", text, 0)                       # # headings
+    text = sub(r"(?m)^• ?", "- ", text, 0)                      # bullets
+
+    for pattern, repl in _NATURAL_PHRASES:
+        # A removed phrase leaves a marker, so the next word can get a capital if it starts a sentence.
+        text = sub(r"\b" + pattern, repl or "\x00", text)
+    for word, repl in _NATURAL_WORDS.items():
+        text = sub(r"\b" + word + r"\b", repl, text)
+    for pattern, repl in _CONTRACTIONS:
+        text = sub(r"\b" + pattern + r"\b", repl, text)
+
+    # Removing a phrase can leave a sentence starting with a small letter.
+    text = re.sub(r"(^|[.!?]\s+|\n\s*)\x00([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+    text = text.replace("\x00", "")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text, changes
+
+
+def parse_typo_targets(text):
+    """'the, because, e' -> ({'the', 'because'}, {'e'}): words and single letters to mess up."""
+    words, letters = set(), set()
+    for item in re.split(r"[,\s]+", text or ""):
+        item = item.strip().lower()
+        if len(item) == 1 and item.isalpha():
+            letters.add(item)
+        elif len(item) > 1:
+            words.add(item)
+    return words, letters
+
+
+def misspell(word, rng, same_length=False):
+    """A believable mistake in a word: two letters swapped, a neighbouring key,
+    and (unless same_length) a doubled or missing letter."""
+    ways = []
+    swaps = [k for k in range(len(word) - 1)
+             if word[k].isalpha() and word[k + 1].isalpha() and word[k].lower() != word[k + 1].lower()]
+    if swaps:
+        ways.append("swap")
+    near = [k for k, c in enumerate(word) if c.lower() in NEIGHBOURS and c.isalpha()]
+    if near:
+        ways.append("near")
+    if not same_length and len(word) >= 3:
+        ways += ["double", "drop"]
+    if not ways:
+        return word
+    way = rng.choice(ways)
+    if way == "swap":
+        k = rng.choice(swaps)
+        return word[:k] + word[k + 1] + word[k] + word[k + 2:]
+    if way == "near":
+        k = rng.choice(near)
+        c = rng.choice(NEIGHBOURS[word[k].lower()])
+        return word[:k] + (c.upper() if word[k].isupper() else c) + word[k + 1:]
+    k = rng.randrange(1, len(word))
+    if way == "double":
+        return word[:k] + word[k] + word[k:]
+    return word[:k] + word[k + 1:]        # drop a letter
+
+
+def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed=None,
+               typo_words=(), typo_letters=(), fix_chosen=True, letter_chance=0.5):
     """
     Turn text into a list of (key, weight) steps.
 
@@ -62,8 +234,14 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
     pressing it, relative to an average letter.  The weights are later scaled so
     the whole text takes exactly as long as the chosen WPM says it should, so
     typos and pauses never change the overall speed.
+
+    typo_words / typo_letters: words that always get a mistake, and letters that
+    get one about letter_chance of the time. fix_chosen=False leaves those
+    mistakes in (and then only uses mistakes that keep the word the same length).
     """
     rng = random.Random(seed)
+    words = {w.lower() for w in typo_words}
+    letters = {c.lower() for c in typo_letters}
     steps = []
     prev = ""
 
@@ -72,9 +250,8 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
             return 1.0
         return rng.lognormvariate(0.0, variation)
 
-    for ch in text:
+    def weight(ch, prev):
         w = jitter()
-
         if natural_pauses:
             if prev in ".!?":
                 w *= 4.5          # end of a sentence
@@ -90,25 +267,62 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
                 w *= 1.25         # reaching for Shift
             if ch == prev and ch.isalpha():
                 w *= 0.75         # double letters are quick
+        return w
 
+    i = 0
+    while i < len(text):
+        ch = text[i]
+
+        # A word you chose: type it wrong (and maybe fix it).
+        if words and ch.isalpha() and (i == 0 or not text[i - 1].isalnum()):
+            j = i
+            while j < len(text) and (text[j].isalnum() or text[j] == "'"):
+                j += 1
+            word = text[i:j]
+            if word.lower() in words and len(word) >= 2:
+                wrong = misspell(word, rng, same_length=not fix_chosen)
+                if wrong != word:
+                    p = prev
+                    for c in wrong:
+                        steps.append((c, weight(c, p)))
+                        p = c
+                    if fix_chosen:
+                        same = 0
+                        while same < min(len(word), len(wrong)) and word[same] == wrong[same]:
+                            same += 1
+                        back = len(wrong) - same          # letters to rub out
+                        for k in range(back):
+                            steps.append((BACKSPACE, (2.8 if k == 0 else 0.6) * jitter()))  # notices...
+                        for k, c in enumerate(word[same:]):
+                            steps.append((c, (2.8 if back == 0 and k == 0 else 1.1) * jitter()))
+                    prev = word[-1]
+                    i = j
+                    continue
+
+        w = weight(ch, prev)
         lower = ch.lower()
-        if typo_percent > 0 and lower in NEIGHBOURS and ch.isalpha() and rng.random() < typo_percent / 100:
+        chosen_letter = lower in letters and ch.isalpha() and rng.random() < letter_chance
+        random_typo = typo_percent > 0 and rng.random() < typo_percent / 100
+        if lower in NEIGHBOURS and ch.isalpha() and (chosen_letter or random_typo):
             wrong = rng.choice(NEIGHBOURS[lower])
             if ch.isupper():
                 wrong = wrong.upper()
             steps.append((wrong, w))
+            if chosen_letter and not fix_chosen:
+                pass                      # leave this one in
             # Sometimes the mistake is noticed a letter late.
-            late = natural_pauses and rng.random() < 0.3
-            if late:
+            elif natural_pauses and rng.random() < 0.3:
                 steps.append((ch, jitter()))  # carries on with the right letter...
                 steps.append((BACKSPACE, 2.8 * jitter()))  # ...then spots it and deletes both
                 steps.append((BACKSPACE, 0.7 * jitter()))
+                steps.append((ch, 1.2 * jitter()))
             else:
                 steps.append((BACKSPACE, 2.4 * jitter()))
-            steps.append((ch, 1.2 * jitter()))
+                steps.append((ch, 1.2 * jitter()))
         else:
             steps.append((ch, w))
         prev = ch
+        i += 1
 
     return steps
 
@@ -742,6 +956,10 @@ class App:
         self.wpm = tk.IntVar(value=60)
         self.variation = tk.IntVar(value=35)
         self.typos = tk.DoubleVar(value=1.5)
+        self.typo_targets = tk.StringVar(value="")     # words and letters to always mess up
+        self.fix_chosen = tk.BooleanVar(value=True)
+        self.natural = tk.BooleanVar(value=False)      # Natural tone switch
+        self._natural_original = self._natural_result = None
         self.pauses = tk.BooleanVar(value=True)
         self.delay = tk.IntVar(value=5)
         self.on_top = tk.BooleanVar(value=True)
@@ -801,7 +1019,9 @@ class App:
         row = ttk.Frame(one)
         row.pack(fill="x", pady=(6, 0))
         ttk.Button(row, text="Paste", command=self._paste).pack(side="left")
-        ttk.Button(row, text="Clear", command=lambda: self.text.delete("1.0", "end")).pack(side="left", padx=6)
+        ttk.Button(row, text="Clear", command=self._clear_text).pack(side="left", padx=6)
+        ttk.Checkbutton(row, text="✨ Natural tone", variable=self.natural, style="Toolbutton",
+                        command=self._toggle_natural).pack(side="left")
         self.info = tk.StringVar()
         ttk.Label(row, textvariable=self.info, foreground="#555").pack(side="right")
 
@@ -880,6 +1100,12 @@ class App:
         ttk.Label(human, textvariable=self.typos, width=4).grid(row=1, column=2)
         ttk.Checkbutton(human, text="Pause between words and after punctuation",
                         variable=self.pauses).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=4)
+        chosen = ttk.Frame(human)
+        chosen.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+        ttk.Label(chosen, text="Always mess up:").pack(side="left")
+        ttk.Entry(chosen, textvariable=self.typo_targets, width=24).pack(side="left", padx=6)
+        ttk.Checkbutton(chosen, text="Fix them", variable=self.fix_chosen).pack(side="left")
+        ttk.Label(chosen, text="e.g.  the, because, e", foreground="#777").pack(side="left", padx=8)
         human.columnconfigure(1, weight=1)
 
         # Start options
@@ -1254,6 +1480,40 @@ class App:
         except (tk.TclError, ValueError):
             return default
 
+    def _set_text(self, text):
+        self.text.edit_separator()
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", text)
+        self.text.edit_separator()   # so Ctrl+Z / Cmd+Z can undo the whole change
+
+    def _clear_text(self):
+        self.text.delete("1.0", "end")
+        self.natural.set(False)
+        self._natural_original = self._natural_result = None
+
+    def _toggle_natural(self):
+        """Natural tone on: rewrite the text so it reads like everyday writing.
+        Off: put the original back (unless you've edited it since)."""
+        if self.natural.get():
+            original = self._get_text()
+            if not original.strip():
+                self.natural.set(False)
+                self.status.set("Paste some text first, then switch on Natural tone.")
+                return
+            new, n = naturalize(original)
+            self._natural_original, self._natural_result = original, new
+            self._set_text(new)
+            self.status.set(f"Natural tone on: {n} change{'' if n == 1 else 's'}. Read it over and tweak anything "
+                            "you like. Switch it off to get your original back." if n else
+                            "Natural tone on: nothing needed changing.")
+        else:
+            if self._natural_original is not None and self._get_text() == self._natural_result:
+                self._set_text(self._natural_original)
+                self.status.set("Natural tone off: your original text is back.")
+            else:
+                self.status.set("Natural tone off. You'd edited the text, so I kept your edits.")
+            self._natural_original = self._natural_result = None
+
     def _paste(self):
         try:
             clip = self.root.clipboard_get()
@@ -1317,6 +1577,9 @@ class App:
             variation=self.variation.get() / 100.0,
             typo_percent=float(self.typos.get()),
             natural_pauses=self.pauses.get(),
+            typo_words=parse_typo_targets(self.typo_targets.get())[0],
+            typo_letters=parse_typo_targets(self.typo_targets.get())[1],
+            fix_chosen=self.fix_chosen.get(),
         )
 
     def _begin(self, text, run, countdown=None, plan=None, jumps=None):
