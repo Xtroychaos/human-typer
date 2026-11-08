@@ -2549,6 +2549,12 @@ def ease_out(t):
     return 1 - (1 - t) ** 3
 
 
+# The design system in one place: every screen lines up on the same left edge
+# (GUTTER from the window's side), long messages wrap at the same width, and text
+# comes in three sizes (title, heading, body; made in App._fonts).
+GUTTER = 20          # window edge to content, in pixels
+WRAP = 620           # long messages wrap here
+
 # Border colours for the boxes.
 BOX_IDLE, BOX_NEXT, BOX_TYPING, BOX_DONE = "#c8c8c8", "#3b82f6", "#f59e0b", "#22a559"
 
@@ -2599,6 +2605,7 @@ class App:
         self.box_cols = 0
         self.run = None      # what the typist is doing right now
 
+        self._fonts()
         self._build()
         self._start_hotkeys()
         for var in (self.wpm, self.random_speed, self.wpm_lo, self.wpm_hi):
@@ -2616,9 +2623,22 @@ class App:
         if self.typist_error:
             self.status.set(self.typist_error)
 
+    # ----- type scale -----
+    def _fonts(self, family=None, size=None):
+        """Title and heading fonts, made once and updated with the theme, so every
+        heading in the app (and its pop-up windows) matches."""
+        base = tkfont.nametofont("TkDefaultFont")
+        family = family or base.cget("family")
+        size = size or base.cget("size")
+        bigger = lambda d: size + d if size > 0 else size - d      # Tk sizes below 0 are pixels
+        if not hasattr(self, "font_title"):
+            self.font_title, self.font_head = tkfont.Font(), tkfont.Font()
+        self.font_title.configure(family=family, size=bigger(4), weight="bold")
+        self.font_head.configure(family=family, size=bigger(1), weight="bold")
+
     # ----- layout -----
     def _build(self):
-        pad = {"padx": 12, "pady": 6}
+        pad = {"padx": GUTTER, "pady": 6}
         main = self.main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
         font = ("", 14 if IS_MAC else 11)
@@ -2676,7 +2696,7 @@ class App:
         ttk.Button(doc, text="Connect Word document…", command=self._connect_word).pack(side="left")
         self.fill_btn = ttk.Button(doc, text="Fill in order", command=self._fill_in_order, state="disabled")
         self.fill_btn.pack(side="left", padx=4)
-        self.word_info = tk.StringVar(value="Not connected. Pick a .docx with a table to choose a cell for each box.")
+        self.word_info = tk.StringVar(value="No document yet")
         ttk.Label(doc, textvariable=self.word_info, foreground="#555").pack(side="left", padx=4)
 
         mode = ttk.Frame(grid)
@@ -2779,9 +2799,10 @@ class App:
         self.stop_btn.pack(side="left")
 
         self.progress = ttk.Progressbar(bottom, maximum=100)
-        self.progress.pack(fill="x", padx=12, pady=(4, 2))
+        self.progress.pack(fill="x", padx=GUTTER, pady=(4, 2))
         self.status = tk.StringVar(value="Paste some text, pick a speed, then press Start.")
-        ttk.Label(bottom, textvariable=self._shown(self.status), wraplength=640, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+        ttk.Label(bottom, textvariable=self._shown(self.status), wraplength=WRAP, justify="left").pack(
+            anchor="w", padx=GUTTER, pady=(0, 10))
 
     # ----- Write tab: chat with Claude -----
     def _build_write_tab(self, font):
@@ -2840,7 +2861,7 @@ class App:
         ttk.Button(use, text="Copy", command=lambda: (self._copy(self._chat_pick()),
                                                      self.chat_status.set("Copied."))).pack(side="right")
         self.chat_status = tk.StringVar(value="")
-        ttk.Label(tab, textvariable=self._shown(self.chat_status), wraplength=620, justify="left").pack(
+        ttk.Label(tab, textvariable=self._shown(self.chat_status), wraplength=WRAP, justify="left").pack(
             anchor="w", pady=(6, 0))
         self._chat_welcome()
 
@@ -3067,7 +3088,7 @@ class App:
         self.check_summary = tk.StringVar(
             value="Paste text here (or press Use this ➜ in Write). Humanise it, check it, then Send to Type.")
         self.rw_status = self.check_summary          # one message line for the whole tab
-        ttk.Label(tab, textvariable=self._shown(self.check_summary), wraplength=620, justify="left").pack(
+        ttk.Label(tab, textvariable=self._shown(self.check_summary), wraplength=WRAP, justify="left").pack(
             anchor="w", pady=(6, 0))
         self._on_check_level(3)
         for var in (self.rw_audience, self.rw_format, self.rw_model):
@@ -3216,6 +3237,7 @@ class App:
                 self._toast_label = None
             self._fade_window(1.0, 1.0, 1)
             st.theme_use(self._classic_theme)
+            self._fonts()
             self.tabbar.pack_forget()
             self.root.configure(background=self._classic_root_bg)
         else:
@@ -3224,6 +3246,7 @@ class App:
                                     "DejaVu Sans", "Helvetica") if f in tkfont.families()), "TkDefaultFont")
             size = 13 if IS_MAC else 10
             base = (fam, size)
+            self._fonts(fam, size)
             st.configure(".", background=pal["bg"], foreground=pal["text"], fieldbackground=pal["field"],
                          bordercolor=pal["border"], lightcolor=pal["bg"], darkcolor=pal["bg"],
                          troughcolor=pal["border"], focuscolor=pal["accent"], selectbackground=pal["sel"],
@@ -3278,9 +3301,10 @@ class App:
             self.root.configure(background=pal["bg"])
             self._rounded(pal, name)
             if not self.tabbar.winfo_ismapped():
-                self.tabbar.pack(fill="x", padx=12, pady=(8, 0), before=self.tabs)
+                self.tabbar.pack(fill="x", padx=GUTTER - 8, pady=(8, 0), before=self.tabs)
             self.tabbar.configure(background=pal["bg"])
             self._layout_tabbar(animate=False)
+        self.style.configure("Head.TRadiobutton", font=self.font_head)
         self._style_tree(self.root, pal)
         self._sections(pal)
         self._cards(pal)
@@ -3339,7 +3363,8 @@ class App:
             f.configure(size=(f.cget("size") or 10) + 1, weight="bold")
         except tk.TclError:
             f = tkfont.nametofont("TkDefaultFont")
-        x, self._tab_x = 4, {}
+        c.create_line(0, 43, c.winfo_width(), 43, fill=pal["border"])     # hairline under the tabs
+        x, self._tab_x = -2, {}
         current = self.tabs.index("current")
         for i, name in enumerate(TAB_NAMES):
             if self.tabs.tab(i, "state") == "hidden":
@@ -3347,7 +3372,7 @@ class App:
             w = f.measure(name)
             colour = pal["text"] if i == current else pal["muted"]
             # The whole tab area takes the click, not just the letters.
-            hit = c.create_rectangle(x, 0, x + w + 20, 44, fill=pal["bg"], outline="")
+            hit = c.create_rectangle(x, 0, x + w + 20, 42, fill=pal["bg"], outline="")
             item = c.create_text(x + 10, 20, text=name, anchor="w", font=f, fill=colour, tags=(f"tab{i}", "tab"))
             for it in (hit, item):
                 c.tag_bind(it, "<Button-1>", lambda e, i=i: self.tabs.select(i))
@@ -3356,8 +3381,8 @@ class App:
             self._tab_x[i] = (x + 10, x + 10 + w)
             x += w + 30
         a, b = self._tab_x[current]
-        self._underline = c.create_line(a + 2, 38, b - 2, 38, fill=pal["accent"], width=4, capstyle="round")
-        btn = c.create_text(c.winfo_width() - 12, 20, text="🎨 Theme", anchor="e", font=f, fill=pal["muted"])
+        self._underline = c.create_line(a + 2, 42, b - 2, 42, fill=pal["accent"], width=3, capstyle="round")
+        btn = c.create_text(c.winfo_width() - 8, 20, text="🎨 Theme", anchor="e", font=f, fill=pal["muted"])
         c.tag_bind(btn, "<Button-1>", lambda e: self.theme_menu.tk_popup(e.x_root, e.y_root))
         c.tag_bind(btn, "<Enter>", lambda e, it=btn: self._tab_hover(it, True))
         c.tag_bind(btn, "<Leave>", lambda e, it=btn: self._tab_hover(it, False))
@@ -3407,7 +3432,7 @@ class App:
             head = getattr(frame, "_head", None)
             if head is not None:
                 head.configure(text=("▸  " if frame._folded else "▾  ") + frame._title
-                               + (f"   ·   {summary}" if frame._folded else ""))
+                               + (f"  ·  {summary}" if frame._folded else ""))
 
     def _fold(self, frame, fold, animate=True):
         self.root.update_idletasks()
@@ -3652,7 +3677,7 @@ class App:
             self.ring.pack_forget()
             self.rw_ring.pack_forget()
             if not self.progress.winfo_ismapped():
-                self.progress.pack(fill="x", padx=12, pady=(4, 2), after=self.ctl)
+                self.progress.pack(fill="x", padx=GUTTER, pady=(4, 2), after=self.ctl)
             return
         self.progress.pack_forget()
         for ring in (self.ring, self.rw_ring):
@@ -3840,11 +3865,11 @@ class App:
         (a0, b0), (a1, b1) = self._underline_at, self._tab_x[i]
         self._underline_at = (a1, b1)
         if not self.animations.get():
-            self.tabbar.coords(self._underline, a1 + 2, 38, b1 - 2, 38)
+            self.tabbar.coords(self._underline, a1 + 2, 42, b1 - 2, 42)
             return
 
         def step(t):
-            self.tabbar.coords(self._underline, a0 + (a1 - a0) * t + 2, 38, b0 + (b1 - b0) * t - 2, 38)
+            self.tabbar.coords(self._underline, a0 + (a1 - a0) * t + 2, 42, b0 + (b1 - b0) * t - 2, 42)
         step(1.0)                          # straight away: no waiting on a tab click
         # and the page itself slides in a little
 
@@ -3899,7 +3924,8 @@ class App:
         return shown
 
     def _toast(self, text):
-        """A small rounded message that slides up from the bottom of the window, then away."""
+        """A small rounded message in the empty middle of the tab bar (so it never
+        covers a button), which drops in and then lifts away."""
         pal = self._pal
         if not pal:
             return
@@ -3907,8 +3933,8 @@ class App:
         if old is not None:
             old.destroy()
         font = tkfont.Font(font=self.style.lookup(".", "font") or "TkDefaultFont")
-        msg = "✓  " + text[:60]
-        w, h = font.measure(msg) + 36, font.metrics("linespace") + 18
+        msg = "✓  " + (text if len(text) <= 34 else text[:33] + "…")
+        w, h = font.measure(msg) + 28, font.metrics("linespace") + 10
         c = self._toast_label = tk.Canvas(self.root, width=w, height=h, highlightthickness=0, bd=0,
                                           background=pal["bg"])
         r = h / 2
@@ -3916,10 +3942,14 @@ class App:
         c.create_oval(w - h, 0, w, h, fill=pal["accent"], outline="")
         c.create_rectangle(r, 0, w - r, h, fill=pal["accent"], outline="")
         c.create_text(w / 2, h / 2, text=msg, fill=pal["accent_text"], font=font)
-        self._tween("toast", 380, lambda t: c.place(relx=0.5, rely=1.0, y=40 - 100 * t, anchor="s"),
-                    then=lambda: self.root.after(1700, lambda: self._tween(
-                        "toast", 300, lambda t: c.place(relx=0.5, rely=1.0, y=-60 + 120 * t, anchor="s"),
-                        then=c.destroy)))
+        if not self.tabbar.winfo_ismapped():
+            c.destroy()
+            return
+        c.configure(background=pal["bg"])
+        at = lambda dy: c.place(in_=self.tabbar, relx=0.58, rely=0.0, y=20 + dy, anchor="center")
+        self._tween("toast", 220, lambda t: at(-8 * (1 - t)),
+                    then=lambda: self.root.after(1800, lambda: self._tween(
+                        "toast", 200, lambda t: at(-8 * t), then=c.destroy)))
 
     def _pulse_start(self, on, countdown=None):
         """The Start button gently pulses during the countdown, and the ring spins."""
@@ -4171,13 +4201,13 @@ class App:
         f = ttk.Frame(win, padding=16)
         f.pack(fill="both", expand=True)
         wrap = 470
-        ttk.Label(f, text="Connect Claude", font=("", 14, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Connect Claude", font=self.font_title).pack(anchor="w")
         ttk.Label(f, text="Pick how Human Typer talks to Claude. You can change it any time.",
                   foreground="#555").pack(anchor="w", pady=(2, 8))
 
         def option(value, title, about):
-            ttk.Radiobutton(f, text=title, value=value, variable=self.rw_engine,
-                            command=self._engine_changed).pack(anchor="w", pady=(10, 0))
+            ttk.Radiobutton(f, text=title, value=value, variable=self.rw_engine, style="Head.TRadiobutton",
+                            command=self._engine_changed).pack(anchor="w", pady=(12, 0))
             body = ttk.Frame(f, padding=(26, 2, 0, 0))
             body.pack(fill="x")
             ttk.Label(body, text=about, foreground="#555", wraplength=wrap, justify="left").pack(anchor="w")
@@ -4219,7 +4249,7 @@ class App:
                   justify="left").pack(anchor="w")
 
         ttk.Separator(f).pack(fill="x", pady=14)
-        ttk.Label(f, text="Also: type from the Claude app", font=("", 11, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Also: type from the Claude app", font=self.font_head).pack(anchor="w")
         ttk.Label(f, text="Adds Human Typer to the Claude desktop app, so in any chat there you can say "
                           "“type it with Human Typer at 60 WPM”.", foreground="#555", wraplength=wrap,
                   justify="left").pack(anchor="w")
@@ -4452,7 +4482,7 @@ class App:
         out.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         in_text, full = tk.StringVar(), tk.StringVar()
         ttk.Label(out, text="In-text:").grid(row=0, column=0, sticky="nw")
-        ttk.Label(out, textvariable=in_text, font=("", 12, "bold")).grid(row=0, column=1, sticky="w")
+        ttk.Label(out, textvariable=in_text, font=self.font_head).grid(row=0, column=1, sticky="w")
         ttk.Label(out, text="Reference:").grid(row=1, column=0, sticky="nw", pady=(4, 0))
         ttk.Label(out, textvariable=full, wraplength=420, justify="left").grid(row=1, column=1, sticky="w", pady=(4, 0))
         ttk.Label(out, text="Put the title in italics in your document (websites and books).",
@@ -4525,7 +4555,7 @@ class App:
 
     def _on_check_level(self, level):
         self.check_level.set(level)
-        self.check_level_name.set(f"{level}: {LEVEL_NAMES[level]}")
+        self.check_level_name.set(f"{level}: {LEVEL_NAMES[level].split(' (')[0]}")
 
     def _on_tab_changed(self):
         # The speed and typing settings are only needed on the Type tab, so hide them for more room.
@@ -4717,7 +4747,7 @@ class App:
         inner.pack(fill="both", expand=True)
         head = ttk.Frame(inner)
         head.pack(fill="x")
-        title = ttk.Label(head, text=f"Box {n}", font=("", 10, "bold"))
+        title = ttk.Label(head, text=f"Box {n}", font=self.font_head)
         title.pack(side="left")
         status = tk.StringVar()
         ttk.Label(head, textvariable=status).pack(side="left", padx=8)
