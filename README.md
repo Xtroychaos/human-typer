@@ -166,6 +166,38 @@ apps, browse, or type somewhere else.
   with the typing. Untick it to type at Word's cursor instead.
 - Try not to type in that same document yourself, above the pinned spot, while it's typing.
 
+## Check tab: mistakes, AI-style habits and references
+
+**Check for mistakes.** Paste your writing (or press **Use the Text tab**). To check just one paragraph, select it
+first. Choose a **fix level** and press **✔ Check**:
+
+| Level | What it fixes |
+| --- | --- |
+| 1 | Only mistakes that make a sentence confusing (a person has to judge these, so the checker leaves them) |
+| 2 | + spelling, typos and doubled words ("teh", "the the"), in Australian spelling |
+| 3 | + grammar: "they was", "could of", their/there, your/you're, then/than, it's/its, to/too, a/an |
+| 4 | + punctuation, capital letters, missing apostrophes ("dont"), missing full stops, run-on sentences |
+| 5 | + very casual words ("gonna") and the same word used twice close together |
+
+Mistakes are highlighted and listed on the right (click one to find it). **Fix all at this level** fixes them and
+tells you how many it noticed but left because they're above your level. Things marked ⚑ are for you to decide.
+It works offline, so it won't catch everything a person would. **Send to the Text tab** when it's ready to type.
+
+**🤖 AI check.** Highlights sentences that have habits common in AI writing ("delve", "a rich tapestry",
+"plays a crucial role", "Furthermore," at the start, ", highlighting…" at the end, long dashes, sentences that are
+all the same length) and says why. Yellow means one habit, orange several. This can't prove anything: plenty of people
+write like this, and AI text can avoid all of it. Use it to start a conversation, not as a verdict.
+
+**📚 APA 7 references.**
+- **Fix in-text refs** tidies the citations already in the text: `(smith 2020)` → `(Smith, 2020)`,
+  `(smith, jones and lee 2019)` → `(Smith et al., 2019)`, `(Australian Government, no date)` →
+  `(Australian Government, n.d.)`, `(Smith 2020, p 12)` → `(Smith, 2020, p. 12)`.
+- **References…** opens a window where you type a source (people or an organisation, year, title, website or
+  publisher, link). It shows the APA 7 in-text citation and reference list entry as you type.
+  **Insert after sentence** puts the citation at the end of the sentence you clicked in, before the full stop.
+  **Add to reference list** collects sources, and **Put reference list at the end** adds them A to Z under
+  "References". Remember to put titles in italics in your document.
+
 ## Tips for Word
 
 Word changes some things as you type. The text still ends up right, but it may look a little different:

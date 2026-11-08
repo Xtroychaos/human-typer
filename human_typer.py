@@ -568,6 +568,154 @@ def check_text_quick_has_mistakes(text):
     return any(d["level"] <= 2 for d in check_text(text))
 
 
+# --------------------------------------------------------------------------- #
+#  APA 7 references: in-text citations and reference list entries
+# --------------------------------------------------------------------------- #
+
+def _cap_name(part):
+    """smith -> Smith, o'brien -> O'Brien, van der berg stays as typed if it has capitals."""
+    if any(c.isupper() for c in part):
+        return part
+    return "-".join("'".join(w[:1].upper() + w[1:] for w in p.split("'")) for p in part.split("-"))
+
+
+def parse_people(text):
+    """
+    'John Smith; Kate Jones' or 'Smith, J.; Jones, K.' or 'Smith and Jones'
+    -> [('Smith', 'J.'), ('Jones', 'K.')]. Initials may be empty.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if ";" in text:
+        parts = text.split(";")
+    else:
+        parts = re.split(r"\s+(?:and|&)\s+", text)
+        # "Smith, Jones, Lee" (surnames only) -> three people
+        if len(parts) == 1 and text.count(",") >= 1 and all(len(p.split()) == 1 for p in text.split(",")) \
+                and not re.search(r",\s*[A-Z]\.?$", text):
+            parts = text.split(",")
+        elif len(parts) > 1:
+            first = parts[0]
+            if "," in first and all(len(p.split()) == 1 for p in first.split(",")):
+                parts = first.split(",") + parts[1:]
+    people = []
+    for p in parts:
+        p = p.strip().strip(",")
+        if not p:
+            continue
+        if "," in p:                                      # "Smith, John" or "Smith, J. K."
+            last, first = [x.strip() for x in p.split(",", 1)]
+        else:                                             # "John Smith" or "Smith"
+            words = p.split()
+            last, first = words[-1], " ".join(words[:-1])
+        initials = " ".join(w[0].upper() + "." for w in re.split(r"[\s.]+", first) if w)
+        people.append((_cap_name(last), initials))
+    return people
+
+
+def apa_in_text(authors, year, organisation=False):
+    """APA 7 in-text citation: (Smith, 2020), (Smith & Jones, 2020), (Smith et al., 2020), (Org, n.d.)."""
+    year = (year or "").strip() or "n.d."
+    if re.fullmatch(r"(?i)n\.?\s*d\.?|no date|none", year):
+        year = "n.d."
+    if organisation:
+        who = (authors or "").strip() or "Unknown"
+    else:
+        people = parse_people(authors)
+        names = [last for last, _ in people] or ["Unknown"]
+        who = names[0] if len(names) == 1 else (f"{names[0]} & {names[1]}" if len(names) == 2
+                                                else f"{names[0]} et al.")
+    return f"({who}, {year})"
+
+
+def apa_reference(authors, year, title, site="", url="", organisation=False, kind="website"):
+    """APA 7 reference list entry (titles should be in italics in your document)."""
+    year = (year or "").strip()
+    year = "n.d." if not year or re.fullmatch(r"(?i)n\.?\s*d\.?|no date|none", year) else year
+    if organisation:
+        who = (authors or "").strip()
+    else:
+        people = [f"{last}, {ini}".strip().rstrip(",") for last, ini in parse_people(authors)]
+        if not people:
+            who = ""
+        elif len(people) == 1:
+            who = people[0]
+        elif len(people) == 2:
+            who = f"{people[0]}, & {people[1]}"
+        elif len(people) <= 20:
+            who = ", ".join(people[:-1]) + f", & {people[-1]}"
+        else:                                     # APA 7: first 19, then ". . .", then the last author
+            who = ", ".join(people[:19]) + f", . . . {people[-1]}"
+    title = (title or "").strip().rstrip(".")
+    site = (site or "").strip().rstrip(".")
+    url = (url or "").strip()
+    if not who:                                   # no author: the title moves to the front
+        entry = f"{title}. ({year})."
+    else:
+        entry = f"{who.rstrip('.')}. ({year}). {title}." if title else f"{who.rstrip('.')}. ({year})."
+    if site and site.lower() != (authors or "").strip().lower():
+        entry += f" {site}."
+    if url and kind == "website":
+        entry += f" {url}"
+    return entry.replace("..", ".")
+
+
+_CITE = re.compile(r"\(\s*([A-Za-z][A-Za-z.'&,\- ]{0,80}?)\s*,?\s+(\d{4}[a-z]?|n\.?\s?d\.?|no date)\s*"
+                   r"((?:,\s*(?:p|pp)\.?\s*[\d\-–]+)?)\s*\)", re.IGNORECASE)
+_NOT_AUTHORS = {"in", "since", "about", "around", "from", "until", "by", "before", "after", "year", "circa",
+                "approx", "approximately", "the", "early", "late", "mid", "c", "ca", "of", "back"}
+
+
+def fix_in_text_citations(text):
+    """Put citations you typed into APA 7 form: (smith 2020) -> (Smith, 2020),
+    (smith, jones and lee 2019) -> (Smith et al., 2019), (Org, no date) -> (Org, n.d.).
+    Returns (new_text, [(old, new), ...])."""
+    changes = []
+
+    def fix(m):
+        who, year, page = m.group(1).strip().rstrip(","), m.group(2), m.group(3) or ""
+        if who.split()[0].lower() in _NOT_AUTHORS:
+            return m.group(0)                       # "(in 2020)" isn't a citation
+        year = "n.d." if re.fullmatch(r"(?i)n\.?\s?d\.?|no date", year) else year
+        who = re.sub(r"\s+et\.?\s*al\.?$", " et al.", who, flags=re.IGNORECASE)
+        if who.endswith(" et al."):
+            names = [who[:-7].strip()]
+            new_who = f"{_cap_name(names[0])} et al."
+        else:
+            names = [n.strip() for n in re.split(r"\s*(?:,|&|\band\b)\s*", who) if n.strip()]
+            looks_like_people = all(len(n.split()) == 1 for n in names)
+            if not looks_like_people:               # an organisation, e.g. "Australian Government"
+                new_who = " ".join(_cap_name(w) if w.islower() and w not in ("of", "and", "for", "the") else w
+                                   for w in who.split())
+            elif len(names) == 1:
+                new_who = _cap_name(names[0])
+            elif len(names) == 2:
+                new_who = f"{_cap_name(names[0])} & {_cap_name(names[1])}"
+            else:
+                new_who = f"{_cap_name(names[0])} et al."
+        if page:
+            page = re.sub(r"(?i),\s*(pp?)\.?\s*", lambda p: f", {p.group(1).lower()}. ", page).replace("-", "–")
+        new = f"({new_who}, {year}{page})"
+        if new != m.group(0):
+            changes.append((m.group(0), new))
+        return new
+
+    return _CITE.sub(fix, text), changes
+
+
+def insert_citation(text, position, citation):
+    """Put a citation at the end of the sentence that contains `position`,
+    just before its full stop. Returns (new_text, where_it_went)."""
+    m = re.compile(r"[.!?]").search(text, position)
+    para_end = text.find("\n", position)
+    end = m.start() if m and (para_end == -1 or m.start() < para_end) else (para_end if para_end != -1 else len(text))
+    while end > 0 and text[end - 1] in " \t":
+        end -= 1
+    new = text[:end] + " " + citation + text[end:]
+    return new, end + 1
+
+
 def parse_typo_targets(text):
     """'the, because, e' -> ({'the', 'because'}, {'e'}): words and single letters to mess up."""
     words, letters = set(), set()
@@ -1572,9 +1720,139 @@ class App:
         ttk.Button(row2, text="✔ Check", command=self._run_check).pack(side="left")
         ttk.Button(row2, text="Fix all at this level", command=self._fix_all).pack(side="left", padx=4)
         ttk.Button(row2, text="🤖 AI check", command=self._run_ai_check).pack(side="left", padx=(12, 0))
+        ttk.Button(row2, text="📚 References…", command=self._open_references).pack(side="right")
+        ttk.Button(row2, text="Fix in-text refs", command=self._fix_citations).pack(side="right", padx=4)
         self.check_summary = tk.StringVar(value="Paste text (or select one paragraph), then press Check or AI check.")
         ttk.Label(tab, textvariable=self.check_summary, wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
         self._on_check_level(3)
+
+    # ----- references -----
+    def _fix_citations(self):
+        """Put the citations already in the text into APA 7 form."""
+        text = self.check_text.get("1.0", "end-1c")
+        new, changes = fix_in_text_citations(text)
+        self._clear_check_marks()
+        if not changes:
+            self.check_summary.set("All the in-text references look like APA 7 already (or there aren't any). "
+                                   "They need to be in brackets with a year, like (Smith, 2020).")
+            return
+        self.check_text.edit_separator()
+        self.check_text.delete("1.0", "end")
+        self.check_text.insert("1.0", new)
+        self.check_text.edit_separator()
+        for old, fixed in changes:
+            self.check_list.insert("end", f"{old} → {fixed}")
+        self.check_summary.set(f"Fixed {len(changes)} in-text reference{'' if len(changes) == 1 else 's'} "
+                               "to APA 7 (listed on the right). Ctrl+Z / Cmd+Z undoes it.")
+
+    def _open_references(self):
+        """A small window to type in a source and get its APA 7 citation and reference."""
+        if getattr(self, "_ref_win", None) is not None and self._ref_win.winfo_exists():
+            self._ref_win.lift()
+            return
+        if not hasattr(self, "ref_list"):
+            self.ref_list = []          # reference list entries you've added
+        win = self._ref_win = tk.Toplevel(self.root)
+        win.title("APA 7 references")
+        win.attributes("-topmost", self.on_top.get())
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill="both", expand=True)
+        v = {k: tk.StringVar() for k in ("authors", "year", "title", "site", "url")}
+        org = tk.BooleanVar(value=False)
+        kind = tk.StringVar(value="website")
+
+        ttk.Label(frame, text="Who wrote it?").grid(row=0, column=0, sticky="w")
+        who = ttk.Frame(frame)
+        who.grid(row=0, column=1, sticky="w")
+        ttk.Radiobutton(who, text="Person / people", value=False, variable=org).pack(side="left")
+        ttk.Radiobutton(who, text="Organisation", value=True, variable=org).pack(side="left", padx=8)
+        rows = [("authors", "Author(s)", "e.g. John Smith; Kate Jones   or   Bureau of Meteorology"),
+                ("year", "Year", "leave empty if there's no date (n.d.)"),
+                ("title", "Title", "the page, article or book title"),
+                ("site", "Website / publisher", "e.g. ABC News   or   Penguin"),
+                ("url", "Link (URL)", "for websites")]
+        for r, (key, label, hint) in enumerate(rows, start=1):
+            ttk.Label(frame, text=label).grid(row=r * 2 - 1, column=0, sticky="w", pady=(6, 0))
+            ttk.Entry(frame, textvariable=v[key], width=48).grid(row=r * 2 - 1, column=1, sticky="ew", pady=(6, 0))
+            ttk.Label(frame, text=hint, foreground="#777").grid(row=r * 2, column=1, sticky="w")
+        kinds = ttk.Frame(frame)
+        kinds.grid(row=11, column=1, sticky="w", pady=(6, 0))
+        ttk.Radiobutton(kinds, text="Website", value="website", variable=kind).pack(side="left")
+        ttk.Radiobutton(kinds, text="Book", value="book", variable=kind).pack(side="left", padx=8)
+
+        out = ttk.LabelFrame(frame, text="APA 7", padding=8)
+        out.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        in_text, full = tk.StringVar(), tk.StringVar()
+        ttk.Label(out, text="In-text:").grid(row=0, column=0, sticky="nw")
+        ttk.Label(out, textvariable=in_text, font=("", 12, "bold")).grid(row=0, column=1, sticky="w")
+        ttk.Label(out, text="Reference:").grid(row=1, column=0, sticky="nw", pady=(4, 0))
+        ttk.Label(out, textvariable=full, wraplength=420, justify="left").grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(out, text="Put the title in italics in your document (websites and books).",
+                  foreground="#777").grid(row=2, column=1, sticky="w")
+
+        def update(*_):
+            in_text.set(apa_in_text(v["authors"].get(), v["year"].get(), org.get()))
+            full.set(apa_reference(v["authors"].get(), v["year"].get(), v["title"].get(), v["site"].get(),
+                                   v["url"].get(), org.get(), kind.get()))
+        for var in list(v.values()) + [org, kind]:
+            var.trace_add("write", update)
+        update()
+
+        note = tk.StringVar(value="Click in a sentence on the Check tab, then press Insert after sentence.")
+
+        def insert():
+            text = self.check_text.get("1.0", "end-1c")
+            if not text.strip():
+                note.set("Put your writing on the Check tab first.")
+                return
+            pos = self.check_text.count("1.0", "insert", "chars")
+            pos = pos[0] if isinstance(pos, tuple) else (pos or 0)
+            new, where = insert_citation(text, pos, in_text.get())
+            self.check_text.edit_separator()
+            self.check_text.delete("1.0", "end")
+            self.check_text.insert("1.0", new)
+            self.check_text.edit_separator()
+            self.check_text.mark_set("insert", self._idx(where + len(in_text.get())))
+            self.check_text.tag_remove("sel", "1.0", "end")
+            self.check_text.tag_add("sel", self._idx(where), self._idx(where + len(in_text.get())))
+            self.check_text.see(self._idx(where))
+            note.set(f"Added {in_text.get()} at the end of that sentence.")
+
+        def add_to_list():
+            entry = full.get()
+            if entry not in self.ref_list:
+                self.ref_list.append(entry)
+            note.set(f"Reference list: {len(self.ref_list)} source{'' if len(self.ref_list) == 1 else 's'}.")
+
+        def copy(text, what):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            note.set(f"Copied the {what}. Paste it where you need it.")
+
+        def list_to_end():
+            if not self.ref_list:
+                note.set("Add some sources to the reference list first.")
+                return
+            refs = "\n".join(sorted(self.ref_list, key=lambda e: e.lower()))
+            self.check_text.insert("end", ("\n\n" if self.check_text.get("1.0", "end-1c").strip() else "")
+                                   + "References\n" + refs)
+            self.check_text.see("end")
+            note.set("Added the reference list (A to Z) to the end of the text.")
+
+        btns = ttk.Frame(frame)
+        btns.grid(row=13, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Button(btns, text="Insert after sentence", command=insert).pack(side="left")
+        ttk.Button(btns, text="Copy in-text", command=lambda: copy(in_text.get(), "in-text reference")).pack(side="left", padx=4)
+        ttk.Button(btns, text="Copy reference", command=lambda: copy(full.get(), "reference")).pack(side="left")
+        btns2 = ttk.Frame(frame)
+        btns2.grid(row=14, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Button(btns2, text="Add to reference list", command=add_to_list).pack(side="left")
+        ttk.Button(btns2, text="Put reference list at the end", command=list_to_end).pack(side="left", padx=4)
+        ttk.Button(btns2, text="New source", command=lambda: [x.set("") for x in v.values()]).pack(side="left")
+        ttk.Label(frame, textvariable=note, foreground="#555", wraplength=480).grid(
+            row=15, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        frame.columnconfigure(1, weight=1)
+        self._ref_vars = (v, org, kind, in_text, full, insert, add_to_list, list_to_end)   # for tests
 
     def _on_check_level(self, level):
         self.check_level.set(level)
