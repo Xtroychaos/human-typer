@@ -198,6 +198,42 @@ write like this, and AI text can avoid all of it. Use it to start a conversation
   **Add to reference list** collects sources, and **Put reference list at the end** adds them A to Z under
   "References". Remember to put titles in italics in your document.
 
+## Rewrite tab (Humaniser)
+
+Rewrites text so it sounds like a person would naturally write or say it, for the audience and format you pick,
+while keeping what it says: names, dates, numbers, quotes and links stay as they are, and nothing new gets added.
+
+- **Audience:** 1 Year 8 · 2 General audience · 3 Team professional · 4 Executive · 5 Finance analyst
+- **Format:** Keep Original · Meeting Notes · PowerPoint Slides · Speaker Notes
+- **AI:** switch between **Local (free)** and **Claude** at the top of the tab. The app remembers your choice.
+
+Press **✨ Rewrite** and the result appears below as it's written (press **■ Stop** to stop). Edit it there, then
+**Copy** it, or send it to the **Text** tab to type or to the **Check** tab.
+
+**Always read the result before you use it**, especially names, numbers and dates. AI can make mistakes.
+
+### Local (free)
+
+Runs an AI model on your own computer: free, private, no account. Small models are good at making text sound natural
+but are less reliable than Claude at keeping every detail exactly right, and they're slower.
+
+1. Download **Ollama** from <https://ollama.com> and open it.
+2. In Terminal, download a model (about 2 GB):
+
+   ```bash
+   ollama pull llama3.2
+   ```
+
+   With 16 GB of memory or more, `ollama pull qwen2.5:7b` (about 5 GB) does noticeably better.
+3. In the Rewrite tab, press **Refresh** and pick the model.
+
+### Claude
+
+Better quality, especially for slides and for executive or finance wording. It needs a Claude API key from
+<https://console.anthropic.com> and is paid per use (a few cents per rewrite). Press **Claude key…** and paste it.
+The key is saved only on your computer (in `.human_typer.json` in your home folder, readable only by you). Keep it
+private like a password. The app uses Claude Opus 5.5.
+
 ## Tips for Word
 
 Word changes some things as you type. The text still ends up right, but it may look a little different:
