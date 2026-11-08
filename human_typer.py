@@ -184,6 +184,390 @@ def naturalize(text):
     return text, changes
 
 
+# --------------------------------------------------------------------------- #
+#  Check: typos, spelling (Australian), grammar and punctuation, by level
+# --------------------------------------------------------------------------- #
+#
+# Levels (you choose how far down the list to fix):
+#   1  mistakes that make a sentence confusing (needs a person to judge; not checked here)
+#   2  spelling mistakes, typos and doubled words
+#   3  grammar: "they was", their/there, your/you're, then/than, it's/its, a/an
+#   4  punctuation, capital letters, missing apostrophes, very long sentences
+#   5  very casual words and the same word repeated close together
+
+LEVEL_NAMES = {
+    1: "Only mistakes that make a sentence confusing",
+    2: "+ spelling, typos and doubled words",
+    3: "+ grammar (they was, their/there, your/you're, then/than, it's/its)",
+    4: "+ punctuation, capitals, apostrophes, run-on sentences",
+    5: "+ very casual wording and repeated words",
+}
+
+
+def _au_spellings():
+    """American spelling -> Australian spelling."""
+    pairs = {}
+
+    def forms(us, au, endings=("", "s", "ed", "ing")):
+        for e in endings:
+            pairs[us + e] = au + e
+
+    for us, au in [("color", "colour"), ("honor", "honour"), ("favor", "favour"), ("labor", "labour"),
+                   ("neighbor", "neighbour"), ("humor", "humour"), ("flavor", "flavour"), ("rumor", "rumour"),
+                   ("harbor", "harbour"), ("odor", "odour"), ("endeavor", "endeavour"), ("armor", "armour"),
+                   ("behavior", "behaviour"), ("vapor", "vapour"), ("savior", "saviour"), ("parlor", "parlour")]:
+        forms(us, au, ("", "s", "ed", "ing", "ful", "less", "able", "ite", "ites", "hood", "al"))
+    for us, au in [("center", "centre"), ("theater", "theatre"), ("fiber", "fibre"), ("liter", "litre"),
+                   ("caliber", "calibre"), ("somber", "sombre"), ("meager", "meagre"), ("kilometer", "kilometre"),
+                   ("centimeter", "centimetre"), ("millimeter", "millimetre")]:
+        forms(us, au, ("", "s"))
+    pairs.update({"centered": "centred", "centering": "centring"})
+    for us, au in [("travel", "travel"), ("cancel", "cancel"), ("label", "label"), ("model", "model"),
+                   ("fuel", "fuel"), ("signal", "signal"), ("total", "total"), ("level", "level"),
+                   ("marvel", "marvel"), ("quarrel", "quarrel"), ("counsel", "counsel")]:
+        for e in ("ed", "ing", "er", "ers"):
+            pairs[us + e] = au + "l" + e
+    pairs.update({
+        "defense": "defence", "offense": "offence", "gray": "grey", "mom": "mum", "moms": "mums",
+        "aluminum": "aluminium", "plow": "plough", "jewelry": "jewellery", "pajamas": "pyjamas",
+        "catalog": "catalogue", "dialog": "dialogue", "enrollment": "enrolment", "fulfill": "fulfil",
+        "skillful": "skilful", "cozy": "cosy", "mustache": "moustache", "maneuver": "manoeuvre",
+        "pediatric": "paediatric", "anesthetic": "anaesthetic", "esthetic": "aesthetic", "math": "maths",
+        "analyze": "analyse", "analyzed": "analysed", "analyzing": "analysing", "paralyze": "paralyse",
+        "paralyzed": "paralysed", "program": "program", "tire": "tire", "practice": "practice",
+    })
+    return {us: au for us, au in pairs.items() if us != au}
+
+
+AU_SPELLING = _au_spellings()
+_IZE_KEEP = {"size", "sized", "sizes", "seize", "seized", "seizes", "seizing", "prize", "prizes", "prized",
+             "capsize", "capsized", "maize", "baize", "downsize", "oversize", "oversized", "citizen", "citizens"}
+AU_PLACES = {"bondi", "manly", "cronulla", "coogee", "uluru", "kakadu", "parramatta", "penrith", "bankstown",
+             "wollongong", "newcastle", "geelong", "ballarat", "bendigo", "cairns", "townsville", "toowoomba",
+             "noosa", "byron", "launceston", "fremantle", "mandurah", "alice", "kosciuszko", "tassie", "nsw",
+             "qld", "vic", "wa", "sa", "nt", "act"}
+AU_WORDS = {"mum", "mums", "arvo", "footy", "uni", "ute", "utes", "maths", "servo", "brekky", "lollies", "doona",
+            "aussie", "aussies", "anzac", "anzacs", "centrelink", "yeah", "okay", "ok", "metre", "metres"}
+
+COMMON_MISSPELLINGS = {
+    "teh": "the", "alot": "a lot", "definately": "definitely", "recieve": "receive", "recieved": "received",
+    "untill": "until", "wich": "which", "becuase": "because", "becasue": "because", "freind": "friend",
+    "freinds": "friends", "beleive": "believe", "goverment": "government", "enviroment": "environment",
+    "seperate": "separate", "occured": "occurred", "tommorow": "tomorrow", "tomorow": "tomorrow",
+    "wierd": "weird", "probly": "probably", "thier": "their", "acheive": "achieve", "arguement": "argument",
+    "begining": "beginning", "beautifull": "beautiful", "finaly": "finally", "realy": "really",
+    "basicly": "basically", "suprise": "surprise", "wensday": "Wednesday", "febuary": "February",
+    "libary": "library", "intresting": "interesting", "diffrent": "different", "cuz": "because",
+}
+
+_ise = re.compile(r"(iz)(e|es|ed|ing|ation|ations|er|ers)$")
+_yze = re.compile(r"(yz)(e|es|ed|ing)$")
+
+
+def _to_au(word):
+    """Australian spelling of a word, or None if it's fine as it is."""
+    low = word.lower()
+    au = AU_SPELLING.get(low)
+    if au is None and low not in _IZE_KEEP and len(low) > 5 and _ise.search(low):
+        au = _ise.sub(lambda m: "is" + m.group(2), low)
+    if au is None and _yze.search(low):
+        au = _yze.sub(lambda m: "ys" + m.group(2), low)
+    if au is None or au == low:
+        return None
+    return _match_case(word, au)
+
+
+_spell = None
+
+
+def _speller():
+    """The spelling dictionary, with Australian spellings and words added."""
+    global _spell
+    if _spell is None:
+        try:
+            from spellchecker import SpellChecker
+            sp = SpellChecker()
+            extra = set(AU_WORDS) | AU_PLACES | set(AU_SPELLING.values())
+            for w in list(sp.word_frequency.keys()):
+                au = _to_au(w)
+                if au:
+                    extra.add(au.lower())
+            sp.word_frequency.load_words(extra)
+            _spell = sp
+        except Exception:
+            _spell = False       # no dictionary: only the built-in list of common misspellings
+    return _spell or None
+
+
+def _issue(start, end, original, suggestion, level, kind, note=""):
+    return {"start": start, "end": end, "original": original, "suggestion": suggestion,
+            "level": level, "type": kind, "note": note}
+
+
+def _sentence_starts(text):
+    """Positions where a sentence starts (start of text, after . ! ? or a blank line)."""
+    starts = {0}
+    for m in re.finditer(r"[.!?]+[\"')\]]*\s+|\n\s*", text):
+        starts.add(m.end())
+    return starts
+
+
+_CONTRACTION_FIXES = {
+    "dont": "don't", "cant": "can't", "wont": "won't", "isnt": "isn't", "arent": "aren't", "doesnt": "doesn't",
+    "didnt": "didn't", "wasnt": "wasn't", "werent": "weren't", "shouldnt": "shouldn't", "couldnt": "couldn't",
+    "wouldnt": "wouldn't", "havent": "haven't", "hasnt": "hasn't", "hadnt": "hadn't", "im": "I'm",
+    "ive": "I've", "youre": "you're", "theyre": "they're", "thats": "that's", "whats": "what's",
+    "theres": "there's", "heres": "here's", "shes": "she's", "hes": "he's", "didn't": None,
+}
+_PROPER = {w.lower(): w for w in [
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March",
+    "April", "June", "July", "August", "September", "October", "November", "December", "Australia", "Australian",
+    "Australians", "Aboriginal", "Indigenous", "Torres", "Strait", "Japan", "Japanese", "China", "Chinese",
+    "America", "American", "England", "English", "Britain", "British", "Europe", "European", "India", "Indian",
+    "Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide", "Hobart", "Darwin", "Canberra", "Queensland",
+    "Victoria", "Tasmania", "Christmas", "Easter", "Anzac", "God", "Asia", "Asian", "Africa", "African",
+    "Indonesia", "Indonesian", "Vietnam", "Vietnamese", "Korea", "Korean", "France", "French", "Germany",
+    "German", "Italy", "Italian", "Spain", "Spanish", "Pacific", "Antarctica", "Uluru", "Instagram",
+    "YouTube", "TikTok", "Google", "Bondi", "Manly", "Uluru", "Kakadu", "Parramatta", "Newcastle",
+    "Wollongong", "Geelong", "Cairns", "Townsville", "Fremantle",
+]}
+_CASUAL = {"gonna": "going to", "wanna": "want to", "gotta": "have to", "kinda": "kind of", "sorta": "sort of",
+           "dunno": "don't know", "lemme": "let me", "gimme": "give me", "ya": "you", "u": "you", "ur": "your",
+           "coz": "because", "tho": "though", "thru": "through", "nope": "no", "yep": "yes"}
+_STOP = set("the a an and or but so of to in on at for with by is are was were be been it its this that these "
+            "those i you he she we they them his her their our my your me us as from not no yes do did does "
+            "have has had will would can could should there here then than if when what which who how".split())
+
+
+def check_text(text):
+    """Find mistakes. Returns a list of issues (start, end, original,
+    suggestion or None, level, type, note), sorted by where they are."""
+    issues = []
+    starts = _sentence_starts(text)
+    speller = _speller()
+
+    def add(*a, **kw):
+        issues.append(_issue(*a, **kw))
+
+    # Level 2: doubled words, common misspellings, spelling.
+    for m in re.finditer(r"\b(\w+)(\s+)(\1)\b", text, re.IGNORECASE):
+        if m.group(1).lower() not in ("had", "that", "is") and not m.group(1).isdigit():
+            add(m.start(), m.end(), m.group(0), m.group(1), 2, "doubled word")
+    for m in re.finditer(r"[A-Za-z][A-Za-z']*", text):
+        word, i = m.group(0), m.start()
+        low = word.lower()
+        if low in COMMON_MISSPELLINGS:
+            add(i, m.end(), word, _match_case(word, COMMON_MISSPELLINGS[low]), 2, "typo")
+            continue
+        au = _to_au(word)
+        if au:
+            add(i, m.end(), word, au, 2, "spelling", "Australian spelling")
+            continue
+        if speller is None or "'" in word or len(word) < 3 or word.isupper():
+            continue
+        if word[0].isupper() and i not in starts:
+            continue                  # probably a name
+        if low in _CONTRACTION_FIXES or low in _CASUAL or low in _PROPER:
+            continue                  # handled at levels 4 and 5
+        if speller.unknown([low]):
+            fix = speller.correction(low)
+            if fix and fix != low:
+                add(i, m.end(), word, _match_case(word, fix), 2, "spelling")
+
+    # Level 3: grammar.
+    rules = [
+        (r"\b(could|should|would|must|might) of\b", lambda m: m.group(1) + " have", "grammar"),
+        (r"\b(they|we|you) was\b", lambda m: m.group(1) + " were", "grammar"),
+        (r"\b(have|has|had) (went|ate|saw|did|came|wrote|took|gave|ran|swam|drank|broke|spoke|chose)\b",
+         lambda m: m.group(1) + " " + {"went": "gone", "ate": "eaten", "saw": "seen", "did": "done",
+                                        "came": "come", "wrote": "written", "took": "taken", "gave": "given",
+                                        "ran": "run", "swam": "swum", "drank": "drunk", "broke": "broken",
+                                        "spoke": "spoken", "chose": "chosen"}[m.group(2).lower()], "grammar"),
+        (r"\byour (welcome|going|not|right|wrong|so|very|really|being|the best|gonna|doing|getting|making)\b",
+         lambda m: "you're " + m.group(1), "wrong word"),
+        (r"\bits (a|an|the|not|been|going|so|very|really|getting|raining|time|true|important|hard|easy)\b",
+         lambda m: "it's " + m.group(1), "wrong word"),
+        (r"\bit's (own|name|colou?r|size|shape|tail|fur|people|beaches|history|culture|population|capital|"
+         r"purpose|habitat|leaves|body)\b", lambda m: "its " + m.group(1), "wrong word"),
+        (r"\bmore (\w+) then\b", lambda m: "more " + m.group(1) + " than", "wrong word"),
+        (r"\bthere (own|house|car|friends?|family|parents|mum|dad|teacher|work|homework|names?|things|team|"
+         r"school|dog|cat|home|lives|eyes|hands)\b", lambda m: "their " + m.group(1), "wrong word"),
+        (r"\btheir (is|are|was|were|will be)\b", lambda m: "there " + m.group(1), "wrong word"),
+        (r"\b(more|less|better|worse|bigger|smaller|rather|other|faster|slower|older|younger|higher|lower|"
+         r"greater|easier|harder|longer|shorter|taller) then\b", lambda m: m.group(1) + " than", "wrong word"),
+        (r"\b(lose|loose) (fitting|clothes|tooth|thread)\b", None, None),
+        (r"\b(will|to|might|could|don't|didn't|not) loose\b", lambda m: m.group(1) + " lose", "wrong word"),
+        (r"\b(I|you|we|they) no (that|what|how|why|where|who|it)\b",
+         lambda m: m.group(1) + " know " + m.group(2), "wrong word"),
+        (r"\bwas (suppose|use) to\b", lambda m: "was " + m.group(1) + "d to", "grammar"),
+        (r"\bto (much|many|late|early|big|small|hard|easy|hot|cold|long|far|tired|busy|scared|sick|fast|slow|"
+         r"loud|quiet|young|old|good|bad|expensive|cheap|full|hungry|short|tall|heavy|close|often)\b",
+         lambda m: "too " + m.group(1), "wrong word"),
+    ]
+    for pattern, fix, kind in rules:
+        if fix is None:
+            continue
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            add(m.start(), m.end(), m.group(0), _match_case(m.group(0), fix(m)), 3, kind)
+    for m in re.finditer(r"\b(a|an) ([A-Za-z]+)", text, re.IGNORECASE):
+        art, nxt = m.group(1), m.group(2).lower()
+        vowel_sound = nxt[0] in "aeio" or (nxt[0] == "u" and not nxt.startswith(("uni", "use", "usu", "ut")))
+        vowel_sound = (vowel_sound or nxt.startswith(("hour", "honest", "honour", "heir"))) and \
+            not nxt.startswith(("one", "once", "eu"))
+        want = "an" if vowel_sound else "a"
+        if art.lower() != want and len(nxt) > 1:
+            add(m.start(1), m.end(1), art, _match_case(art, want), 3, "grammar")
+
+    # Level 4: apostrophes, capitals, spacing, full stops, run-on sentences.
+    for m in re.finditer(r"\b[A-Za-z]+\b", text):
+        word, low = m.group(0), m.group(0).lower()
+        fix = _CONTRACTION_FIXES.get(low)
+        if fix and not (low == "im" and word == "IM"):
+            add(m.start(), m.end(), word, _match_case(word, fix) if low != "im" else "I'm", 4, "apostrophe")
+        elif word == "i":
+            add(m.start(), m.end(), word, "I", 4, "capital letter")
+        elif low in _PROPER and word != _PROPER[low] and word.islower():
+            add(m.start(), m.end(), word, _PROPER[low], 4, "capital letter")
+    for i in sorted(starts):
+        if i < len(text) and text[i].islower():
+            m = re.match(r"[a-z]+", text[i:])
+            if m and m.group(0) not in ("i",):
+                w = m.group(0)
+                add(i, i + len(w), w, w[0].upper() + w[1:], 4, "capital letter", "start of a sentence")
+    for m in re.finditer(r"(\w) +([,.!?;:])(?!\w)", text):
+        add(m.start(), m.end(), m.group(0), m.group(1) + m.group(2), 4, "punctuation", "space before punctuation")
+    for m in re.finditer(r"([a-z])([,;])([A-Za-z])", text):
+        add(m.start(), m.end(), m.group(0), m.group(1) + m.group(2) + " " + m.group(3), 4, "punctuation",
+            "missing space")
+    for m in re.finditer(r"([A-Za-z0-9')]+)[ \t]*(?=\n\s*\n|\Z)", text):
+        para = text[:m.end(1)].rsplit("\n\n", 1)[-1].strip()
+        if len(para.split()) >= 6:
+            add(m.start(1), m.end(1), m.group(1), m.group(1) + ".", 4, "punctuation", "missing full stop")
+    for m in re.finditer(r", (it|i|I|we|they|he|she|you) (was|were|is|are|went|had|did|got|love|loved|want)\b", text):
+        add(m.start(), m.start() + 1, ",", None, 4, "run-on sentence",
+            "two sentences joined with a comma: think about a full stop")
+    for m in re.finditer(r"[^.!?\n]{2,}[.!?]?", text):
+        if len(m.group(0).split()) > 40:
+            add(m.start(), m.end(), m.group(0), None, 4, "run-on sentence",
+                "very long sentence: think about splitting it")
+
+    # Level 5: casual words, a word repeated close together.
+    for m in re.finditer(r"\b[A-Za-z]+\b", text):
+        low = m.group(0).lower()
+        if low in _CASUAL:
+            add(m.start(), m.end(), m.group(0), _match_case(m.group(0), _CASUAL[low]), 5, "casual word")
+    words = [(m.group(0).lower(), m.start(), m.end()) for m in re.finditer(r"[A-Za-z']+", text)]
+    for k, (w, a, b) in enumerate(words):
+        if len(w) < 4 or w in _STOP:
+            continue
+        for w2, a2, b2 in words[k + 1:k + 7]:
+            if w2 == w:
+                add(a2, b2, text[a2:b2], None, 5, "repeated word", f'"{w}" is used twice close together')
+                break
+
+    # One issue per spot: keep the most important (lowest level) where two overlap.
+    issues.sort(key=lambda d: (d["level"], d["start"]))
+    kept = []
+    for d in issues:
+        if all(d["end"] <= k["start"] or d["start"] >= k["end"] for k in kept):
+            kept.append(d)
+    return sorted(kept, key=lambda d: d["start"])
+
+
+def apply_fixes(text, issues, level):
+    """Fix every issue up to the level that has a suggestion. Returns
+    (new_text, fixed_issues, left_count): left_count counts the mistakes
+    noticed above the level, plus ones that need you to decide."""
+    fixed = [d for d in issues if d["level"] <= level and d["suggestion"] is not None]
+    left = sum(1 for d in issues if d["level"] > level)
+    for d in sorted(fixed, key=lambda d: d["start"], reverse=True):
+        text = text[:d["start"]] + d["suggestion"] + text[d["end"]:]
+    return text, fixed, left
+
+
+# --------------------------------------------------------------------------- #
+#  AI check: sentences with habits that AI writing tends to have
+# --------------------------------------------------------------------------- #
+
+_AI_PHRASES = [
+    (r"\bdelv(e|es|ed|ing)\b", '"delve"'), (r"\btapestry\b", '"tapestry"'), (r"\btestament to\b", '"a testament to"'),
+    (r"\bunderscor(e|es|ed|ing)\b", '"underscore"'), (r"\bpivotal\b", '"pivotal"'), (r"\bcrucial\b", '"crucial"'),
+    (r"\bmultifaceted\b", '"multifaceted"'), (r"\bintricate\b", '"intricate"'), (r"\brealm\b", '"realm"'),
+    (r"\bnavigat(e|es|ed|ing) the\b", '"navigate the"'), (r"\bfoster(s|ed|ing)?\b", '"foster"'),
+    (r"\bleverag(e|es|ed|ing)\b", '"leverage"'), (r"\brobust\b", '"robust"'), (r"\bseamless(ly)?\b", '"seamless"'),
+    (r"\bholistic\b", '"holistic"'), (r"\bnuanced?\b", '"nuanced"'), (r"\bvibrant\b", '"vibrant"'),
+    (r"\bprofound(ly)?\b", '"profound"'), (r"\bshowcas(e|es|ed|ing)\b", '"showcase"'),
+    (r"\bembark(s|ed|ing)? on\b", '"embark on"'), (r"\bever-(evolving|changing)\b", '"ever-evolving"'),
+    (r"\bplays? an? (crucial|vital|pivotal|key|significant) role\b", '"plays a crucial role"'),
+    (r"\b(it is|it's) (important|worth|crucial) (to note|noting|to remember)\b", '"it is important to note"'),
+    (r"\bin today's (world|society|fast-paced)\b", '"in today\'s world"'),
+    (r"\b(serves|stands) as an?\b", '"stands as / serves as"'), (r"\bnot only\b.*\bbut also\b", '"not only... but also"'),
+    (r"\ba (rich|diverse|wide) (array|range|tapestry)\b", '"a rich array"'),
+    (r"\bin the (realm|world|landscape) of\b", '"in the realm of"'), (r"\blandscape\b", '"landscape"'),
+    (r"\bmeticulous(ly)?\b", '"meticulous"'), (r"\bcommendable\b", '"commendable"'),
+    (r"\benhanc(e|es|ed|ing)\b", '"enhance"'), (r"\butiliz(e|es|ed|ing)\b|\butilis(e|es|ed|ing)\b", '"utilise"'),
+    (r"\bresonat(e|es|ed|ing)\b", '"resonate"'), (r"\bpaving the way\b", '"paving the way"'),
+]
+_AI_OPENERS = r"^(Furthermore|Moreover|Additionally|In conclusion|Overall|Ultimately|Notably|Consequently|" \
+              r"In summary|Importantly|Interestingly|In essence)\b,?"
+_AI_TAIL = r", (highlighting|underscoring|showcasing|emphasising|emphasizing|reflecting|demonstrating|" \
+           r"illustrating|ensuring|fostering|reinforcing)\b"
+
+
+def sentences_of(text):
+    """(start, end, sentence) for each sentence."""
+    out = []
+    for m in re.finditer(r"[^.!?\n]+(?:[.!?]+[\"')\]]*)?", text):
+        chunk = m.group(0)
+        lead = len(chunk) - len(chunk.lstrip())
+        sent = chunk.strip()
+        if len(sent.split()) >= 3:
+            out.append((m.start() + lead, m.start() + lead + len(sent), sent))
+    return out
+
+
+def ai_signals(text):
+    """
+    Look for writing habits common in AI text, sentence by sentence.
+    This is a hint, not proof: people write like this too, and AI text
+    can avoid all of it. Returns (sentences, notes) where each sentence is
+    {start, end, text, signals, strength 0-2}.
+    """
+    sents = []
+    for a, b, sent in sentences_of(text):
+        signals = []
+        for pattern, name in _AI_PHRASES:
+            if re.search(pattern, sent, re.IGNORECASE):
+                signals.append(f"uses {name}")
+        if re.search(_AI_OPENERS, sent):
+            signals.append("starts with a formal linking word")
+        if re.search(_AI_TAIL, sent):
+            signals.append('ends with a ", highlighting..." style add-on')
+        if "—" in sent:
+            signals.append("long dash (—), which is hard to type on a keyboard")
+        if re.search(r"\b\w+, \w+(,)? and \w+\b", sent) and len(sent.split()) > 18 and signals:
+            signals.append("list of three")
+        strength = 0 if not signals else (1 if len(signals) == 1 else 2)
+        sents.append({"start": a, "end": b, "text": sent, "signals": signals, "strength": strength})
+
+    notes = []
+    lengths = [len(s["text"].split()) for s in sents]
+    if len(lengths) >= 5:
+        mean = sum(lengths) / len(lengths)
+        spread = (sum((x - mean) ** 2 for x in lengths) / len(lengths)) ** 0.5
+        if mean > 12 and spread / mean < 0.25:
+            notes.append("The sentences are all a very similar length, which is common in AI text "
+                         "(people usually mix short and long sentences).")
+    if sents and len(text.split()) > 80 and not check_text_quick_has_mistakes(text):
+        notes.append("There are no spelling or typing mistakes at all. That's normal for careful writers "
+                     "and for AI, so it's only a small hint.")
+    return sents, notes
+
+
+def check_text_quick_has_mistakes(text):
+    return any(d["level"] <= 2 for d in check_text(text))
+
+
 def parse_typo_targets(text):
     """'the, because, e' -> ({'the', 'because'}, {'e'}): words and single letters to mess up."""
     words, letters = set(), set()
@@ -998,7 +1382,7 @@ class App:
         font = ("", 14 if IS_MAC else 11)
         # The settings and buttons go at the bottom first, so they always keep
         # their space and the text area takes what's left.
-        bottom = ttk.Frame(main)
+        bottom = self.bottom = ttk.Frame(main)
         bottom.pack(side="bottom", fill="x")
 
         self.tabs = ttk.Notebook(main)
@@ -1063,7 +1447,8 @@ class App:
         self.box_area.pack(fill="both", expand=True)
         self.box_area.canvas.bind("<Configure>", self._on_box_area_resize, add="+")
 
-        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._refresh_boxes())
+        self._build_check_tab(font)
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
         # Speed
         speed = ttk.LabelFrame(bottom, text="Speed")
@@ -1143,6 +1528,211 @@ class App:
         self.progress.pack(fill="x", padx=12, pady=(4, 2))
         self.status = tk.StringVar(value="Paste some text, pick a speed, then press Start.")
         ttk.Label(bottom, textvariable=self.status, wraplength=640, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+
+    # ----- check tab -----
+    def _build_check_tab(self, font):
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(tab, text="  Check  ")
+        self.check_level = tk.IntVar(value=3)
+        self.check_issues = []        # from the last Check
+        self.check_offset = 0         # where the checked part starts (when you selected a paragraph)
+
+        tools = ttk.Frame(tab)
+        tools.pack(fill="x")
+        ttk.Button(tools, text="Paste", command=self._check_paste).pack(side="left")
+        ttk.Button(tools, text="Use the Text tab", command=self._check_from_text_tab).pack(side="left", padx=4)
+        ttk.Button(tools, text="Clear", command=lambda: self.check_text.delete("1.0", "end")).pack(side="left")
+        ttk.Button(tools, text="Send to the Text tab ➜", command=self._check_to_text_tab).pack(side="right")
+
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, pady=6)
+        self.check_text = tk.Text(body, wrap="word", undo=True, height=6, width=40, font=font)
+        bar = ttk.Scrollbar(body, command=self.check_text.yview)
+        self.check_text.configure(yscrollcommand=bar.set)
+        self.check_text.pack(side="left", fill="both", expand=True)
+        bar.pack(side="left", fill="y")
+        self.check_list = tk.Listbox(body, width=38, activestyle="none", font=("", 12 if IS_MAC else 9))
+        self.check_list.pack(side="left", fill="both", padx=(6, 0))
+        self.check_list.bind("<<ListboxSelect>>", lambda e: self._check_show_selected())
+        self.check_rows = []          # what each list line points at: (start, end)
+        for tag, colour in (("lvl1", "#fecaca"), ("lvl2", "#fecaca"), ("lvl3", "#fed7aa"), ("lvl4", "#bfdbfe"),
+                            ("lvl5", "#e5e7eb"), ("ai1", "#fef08a"), ("ai2", "#fdba74")):
+            self.check_text.tag_configure(tag, background=colour)
+        self.check_text.bind("<<Modified>>", self._on_check_text_changed)
+
+        row = ttk.Frame(tab)
+        row.pack(fill="x")
+        ttk.Label(row, text="Fix level").pack(side="left")
+        ttk.Scale(row, from_=1, to=5, variable=self.check_level, orient="horizontal", length=120,
+                  command=lambda v: self._on_check_level(int(round(float(v))))).pack(side="left", padx=6)
+        self.check_level_name = tk.StringVar()
+        ttk.Label(row, textvariable=self.check_level_name, foreground="#555").pack(side="left")
+        row2 = ttk.Frame(tab)
+        row2.pack(fill="x", pady=(6, 0))
+        ttk.Button(row2, text="✔ Check", command=self._run_check).pack(side="left")
+        ttk.Button(row2, text="Fix all at this level", command=self._fix_all).pack(side="left", padx=4)
+        ttk.Button(row2, text="🤖 AI check", command=self._run_ai_check).pack(side="left", padx=(12, 0))
+        self.check_summary = tk.StringVar(value="Paste text (or select one paragraph), then press Check or AI check.")
+        ttk.Label(tab, textvariable=self.check_summary, wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
+        self._on_check_level(3)
+
+    def _on_check_level(self, level):
+        self.check_level.set(level)
+        self.check_level_name.set(f"{level}: {LEVEL_NAMES[level]}")
+
+    def _on_tab_changed(self):
+        # The speed and typing settings aren't needed on the Check tab, so hide them for more room.
+        if self._on_check_tab():
+            self.bottom.pack_forget()
+        elif not self.bottom.winfo_ismapped():
+            self.bottom.pack(side="bottom", fill="x", before=self.tabs)
+        self._refresh_boxes()
+
+    def _on_check_tab(self):
+        try:
+            return self.tabs.index("current") == 2
+        except tk.TclError:
+            return False
+
+    def _check_paste(self):
+        try:
+            self.check_text.insert("insert", self.root.clipboard_get())
+        except tk.TclError:
+            pass
+
+    def _check_from_text_tab(self):
+        self.check_text.delete("1.0", "end")
+        self.check_text.insert("1.0", self._get_text())
+
+    def _check_to_text_tab(self):
+        self._set_text(self.check_text.get("1.0", "end-1c"))
+        self.tabs.select(0)
+        self.status.set("Copied to the Text tab, ready to type.")
+
+    def _on_check_text_changed(self, _event=None):
+        if self.check_text.edit_modified():
+            self.check_text.edit_modified(False)
+            # Tk reports changes a moment late, so compare with the text that was checked
+            # and only clear the highlights if it really is different now.
+            if self.check_text.get("1.0", "end-1c") != getattr(self, "_checked_text", None):
+                self._clear_check_marks()   # the text changed, so old highlights no longer line up
+
+    def _clear_check_marks(self):
+        for tag in ("lvl1", "lvl2", "lvl3", "lvl4", "lvl5", "ai1", "ai2"):
+            self.check_text.tag_remove(tag, "1.0", "end")
+        self.check_list.delete(0, "end")
+        self.check_rows = []
+        self.check_issues = []
+
+    def _check_part(self):
+        """The selected text if you selected some, otherwise all of it. Returns (offset, text)."""
+        all_text = self.check_text.get("1.0", "end-1c")
+        try:
+            a = self.check_text.count("1.0", "sel.first", "chars")
+            b = self.check_text.count("1.0", "sel.last", "chars")
+            a = a[0] if isinstance(a, tuple) else (a or 0)
+            b = b[0] if isinstance(b, tuple) else (b or 0)
+            if b > a:
+                return a, all_text[a:b]
+        except tk.TclError:
+            pass
+        return 0, all_text
+
+    def _idx(self, n):
+        return f"1.0 + {n} chars"
+
+    def _run_check(self):
+        offset, part = self._check_part()
+        if not part.strip():
+            self.check_summary.set("There's nothing to check. Paste some text first.")
+            return
+        self._clear_check_marks()
+        level = self.check_level.get()
+        issues = check_text(part)
+        self.check_offset, self.check_issues, self.check_part_text = offset, issues, part
+        self._checked_text = self.check_text.get("1.0", "end-1c")
+        shown = [d for d in issues if d["level"] <= level]
+        for d in shown:
+            a, b = offset + d["start"], offset + d["end"]
+            self.check_text.tag_add(f"lvl{d['level']}", self._idx(a), self._idx(b))
+            if d["suggestion"] is None:
+                line = f"⚑ {d['type']}: {d['note']}"
+            else:
+                line = f"{d['original']} → {d['suggestion']}  ({d['type']}{', ' + d['note'] if d['note'] else ''})"
+            self.check_list.insert("end", line)
+            self.check_rows.append((a, b))
+        left = len(issues) - len(shown)
+        where = "the selected part" if offset or len(part) < len(self.check_text.get("1.0", "end-1c")) else "the text"
+        if not shown:
+            msg = f"No mistakes found in {where} at level {level}."
+        else:
+            fixable = sum(1 for d in shown if d["suggestion"] is not None)
+            msg = (f"Found {len(shown)} thing{'' if len(shown) == 1 else 's'} to look at in {where} "
+                   f"({fixable} can be fixed with Fix all). Click one in the list to see it.")
+        if left:
+            msg += f" {left} more noticed but left, because they're above level {level}."
+        if level == 1:
+            msg += " Confusing sentences (level 1) need a person to read them; this checker can't judge meaning."
+        self.check_summary.set(msg)
+
+    def _fix_all(self):
+        if not self.check_issues:
+            self._run_check()          # nothing checked yet (or the text changed): check first
+        if not self.check_issues:
+            return
+        level = self.check_level.get()
+        offset, part = self.check_offset, self.check_part_text
+        new_part, fixed, left = apply_fixes(part, self.check_issues, level)
+        flags = sum(1 for d in self.check_issues if d["level"] <= level and d["suggestion"] is None)
+        self.check_text.edit_separator()
+        self.check_text.delete(self._idx(offset), self._idx(offset + len(part)))
+        self.check_text.insert(self._idx(offset), new_part)
+        self.check_text.edit_separator()
+        self._clear_check_marks()
+        msg = f"Fixed {len(fixed)} mistake{'' if len(fixed) == 1 else 's'}."
+        if flags:
+            msg += f" {flags} need{'s' if flags == 1 else ''} you to decide (marked ⚑ when you Check again)."
+        if left:
+            msg += f" Left {left} because {'it is' if left == 1 else 'they are'} above level {level}."
+        msg += " Ctrl+Z / Cmd+Z undoes it."
+        self.check_summary.set(msg)
+
+    def _check_show_selected(self):
+        sel = self.check_list.curselection()
+        if not sel or sel[0] >= len(self.check_rows):
+            return
+        a, b = self.check_rows[sel[0]]
+        self.check_text.tag_remove("sel", "1.0", "end")
+        self.check_text.tag_add("sel", self._idx(a), self._idx(b))
+        self.check_text.see(self._idx(a))
+
+    def _run_ai_check(self):
+        offset, part = self._check_part()
+        if len(part.split()) < 10:
+            self.check_summary.set("Paste a bit more text (at least a few sentences) for the AI check.")
+            return
+        self._clear_check_marks()
+        self._checked_text = self.check_text.get("1.0", "end-1c")
+        sents, notes = ai_signals(part)
+        flagged = [x for x in sents if x["strength"]]
+        for x in sents:
+            if x["strength"]:
+                a, b = offset + x["start"], offset + x["end"]
+                self.check_text.tag_add(f"ai{x['strength']}", self._idx(a), self._idx(b))
+                short = x["text"] if len(x["text"]) < 40 else x["text"][:38] + "…"
+                self.check_list.insert("end", f"“{short}”")
+                self.check_rows.append((a, b))
+                for sig in x["signals"]:
+                    self.check_list.insert("end", f"     • {sig}")
+                    self.check_rows.append((a, b))
+        strong = sum(1 for x in flagged if x["strength"] == 2)
+        msg = (f"{len(flagged)} of {len(sents)} sentences have AI-style habits"
+               f"{f' ({strong} with several)' if strong else ''}. Yellow = one habit, orange = several.")
+        if notes:
+            msg += " " + " ".join(notes)
+        msg += (" Keep in mind: this only spots habits common in AI writing. Real people write like this too, "
+                "and AI text can avoid them, so use it to start a chat, not as proof.")
+        self.check_summary.set(msg)
 
     # ----- boxes -----
     def _add_box(self, text="", focus=False):
