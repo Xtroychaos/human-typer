@@ -54,7 +54,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed \
             --name "Human Typer" --icon icon.png --add-data "icon.png;." \
             --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
-            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx --collect-data spellchecker --collect-data certifi \
+            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx --collect-data spellchecker --collect-data certifi --collect-submodules mcp.server --collect-submodules mcp.shared --hidden-import anyio._backends._asyncio \
             human_typer.py
           mkdir out
           cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
@@ -68,7 +68,7 @@ jobs:
             --name "Human Typer" --icon icon.png --add-data "icon.png:." \
             --osx-bundle-identifier com.xtroychaos.humantyper \
             --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin \
-            --hidden-import HIServices --hidden-import Foundation --collect-data docx --collect-data spellchecker --collect-data certifi \
+            --hidden-import HIServices --hidden-import Foundation --collect-data docx --collect-data spellchecker --collect-data certifi --collect-submodules mcp.server --collect-submodules mcp.shared --hidden-import anyio._backends._asyncio \
             human_typer.py
           # Lets the Mac ask "Human Typer wants to control Microsoft Word", then re-signs the app.
           plutil -insert NSAppleEventsUsageDescription -string \
@@ -83,6 +83,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then APP="dist/Human Typer.exe"; else APP="dist/Human Typer.app/Contents/MacOS/Human Typer"; fi
           "$APP" --selftest --net
           echo "self-test passed"
+          python tests/mcp_smoke.py "$APP" --mcp
 
       - name: Quick check that the app starts
         run: |

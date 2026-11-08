@@ -183,10 +183,16 @@ Mistakes are highlighted and listed on the right (click one to find it). **Fix a
 tells you how many it noticed but left because they're above your level. Things marked ⚑ are for you to decide.
 It works offline, so it won't catch everything a person would. **Send to the Text tab** when it's ready to type.
 
-**🤖 AI check.** Highlights sentences that have habits common in AI writing ("delve", "a rich tapestry",
-"plays a crucial role", "Furthermore," at the start, ", highlighting…" at the end, long dashes, sentences that are
-all the same length) and says why. Yellow means one habit, orange several. This can't prove anything: plenty of people
-write like this, and AI text can avoid all of it. Use it to start a conversation, not as a verdict.
+**🤖 AI check.** Gives an **AI-style score out of 100** (Low / Medium / High) with the reasons, and highlights the
+sentences that show the most AI habits (yellow = some, orange = many). It looks at the writing as a whole: polished
+phrases ("paving the way", "reshaping the landscape"), no contractions, long and even sentences, formal linking words
+("However,", "Ultimately,"), ", doing something" add-ons at the end of sentences, neat lists of three, an essay shape
+ending in "In conclusion", no "I", lots of long words, and no slips at all.
+
+It's a guide, not a verdict. In testing on pieces it hadn't seen, AI-written essays, emails and meeting notes scored
+High, and casual and Year 8 writing scored Low, but a strong student's clean, formal essay scored **Medium** and an
+AI-written story only scored Medium. No checker (including paid ones) can prove who wrote something, so use it to
+start a conversation, never as proof on its own.
 
 **📚 APA 7 references.**
 - **Fix in-text refs** tidies the citations already in the text: `(smith 2020)` → `(Smith, 2020)`,
@@ -233,6 +239,29 @@ Better quality, especially for slides and for executive or finance wording. It n
 <https://console.anthropic.com> and is paid per use (a few cents per rewrite). Press **Claude key…** and paste it.
 The key is saved only on your computer (in `.human_typer.json` in your home folder, readable only by you). Keep it
 private like a password. The app uses Claude Opus 5.5.
+
+## Use it from Claude (connector)
+
+Human Typer can be a **connector** for the Claude desktop app, so Claude can write something with you and then have
+Human Typer type it. It uses your normal Claude plan (no API key, no extra cost).
+
+1. In Human Typer, choose **Claude → Connect to the Claude app…** (in the clean themes it's in the **🎨** menu).
+   This adds Human Typer to the Claude app's connector settings (and saves a backup of that file).
+2. Quit the Claude app completely and open it again.
+3. In a chat, ask Claude to write something, then say something like *"type it with Human Typer at 60 WPM"*.
+   Human Typer comes to the front and counts down: click into your document, and it types it out.
+
+Claude can also ask Human Typer to **stop**, check **how far it's got**, **check writing** (fix levels), give an
+**AI-style score**, **fix APA citations** and make **APA references**. The **humanise** prompt (Claude's **+** menu)
+rewrites text for an audience and format using the Humaniser instructions.
+
+Keep Human Typer in your **Applications** folder (Mac) so the Claude app can always find it. If you move it, connect
+again. To remove it: **Claude → Disconnect from the Claude app**.
+
+## Simple view
+
+**Simple view** (in the Themes / 🎨 menu) hides everything except the text box, the speed and Start/Stop. Handy
+when Claude is sending the text anyway.
 
 ## Themes
 
