@@ -1,12 +1,22 @@
 # Human Typer
 
-Paste in any text, choose how many **words per minute** you want, then click into a Word document. Human Typer types
-the text out key by key, like a person would.
+Ask Claude to write something (or paste your own text), make it sound like you, choose how many **words per minute**
+you want, then click into a Word document. Human Typer types the text out key by key, like a person would.
+
+The app has three tabs, in the order you use them:
+
+1. **Write** – chat with Claude, using your own Claude account.
+2. **Polish** – humanise it for an audience, and check it for mistakes and AI-style habits.
+3. **Type** – pick a speed and it types it into your document.
 
 ![Human Typer window](screenshot.png)
 
 ## What it does
 
+- **Write with Claude.** A chat box on the **Write** tab: ask Claude to write an email, an answer, notes or a story,
+  and change it by chatting. It uses **your Claude account** (no API key). See [Write tab](#write-tab-chat-with-claude).
+- **One-click workflow.** Press **Use this ➜** under Claude's answer and it's humanised, checked for mistakes, and
+  put on the Type tab ready to go (or starts typing straight away, if you tick **Start typing**).
 - **Any speed you like.** Use the slider (1–300 WPM), type a number into the box (up to 2000), or press a preset
   (25, 40, 60, 90 or 120). You can change the speed **while it's typing** and it speeds up or slows down straight away.
 - **Random speed.** Tick **Random speed between** and pick two speeds, like 40 and 90. While it types, the speed keeps
@@ -84,23 +94,74 @@ asked, and quit and reopen it once more.
 
 ## How to use it
 
-1. Copy your text and press **Paste** (or click in the box and press Ctrl+V).
-2. Pick your speed.
+**With Claude:**
+
+1. The first time, press **Connect Claude…** on the Write tab and follow the two steps. See
+   [Connect Claude](#connect-claude).
+2. On **Write**, ask Claude for what you need, like *"Write a short email asking my boss for Friday off"*. Keep
+   chatting to change it (*"make it shorter"*, *"more casual"*).
+3. Press **Use this ➜**. With **Humanise** and **Fix mistakes** ticked, it's rewritten to sound natural, checked, and
+   put on the **Type** tab. (Want just part of the answer? Select that part of the chat first.)
+4. Read it over, then press **Start typing** and click into your Word document before the countdown ends.
+
+**With your own text:**
+
+1. Go to **Type**, copy your text and press **Paste** (or click in the box and press Ctrl+V).
+2. Pick your speed (click **Speed** to open it).
 3. Press **Start typing**.
 4. **Click inside your Word document** where the text should go, before the countdown ends (5 seconds by default).
 5. Keep your hands off the keyboard and mouse until it finishes. To stop it, push the mouse into the top-left corner
    of the screen (or press **Esc** on Windows).
 
+The app opens on the tab you used last.
+
+## Write tab: chat with Claude
+
+![The Write tab](screenshot.png)
+
+- Type a message and press **Send** (or **Enter**; **Shift+Enter** starts a new line). Claude's answer appears as
+  it's written. Press **■ Stop** to stop it.
+- Claude is told to reply with just the finished text (no "Here's your email:" line), so it's ready to use.
+- **Use this ➜** sends Claude's last answer on. Tick what should happen to it:
+  - **Humanise** – rewritten for the audience and format picked on the Polish tab.
+  - **Fix mistakes** – spelling, grammar and so on fixed, at the fix level picked on the Polish tab.
+  - **Start typing** – starts the countdown straight away, so click into your document.
+- **Copy** copies the answer. **New chat** starts again.
+- The line at the top says which AI it's using. **Connect Claude…** changes it.
+
+Always read what Claude wrote before you use it. AI can get things wrong.
+
+## Connect Claude
+
+Press **Connect Claude…** (on the Write tab, or in the **Claude** / **🎨** menu). One window has every way of
+connecting:
+
+![The Connect Claude window](screenshot-connect.png)
+
+- **My Claude account (recommended).** Uses the Claude plan you already have (Pro or Max) through Claude Code,
+  Anthropic's free command-line app. No API key, nothing extra to pay.
+  1. Press **① Install Claude Code**. A Terminal (PowerShell on Windows) window opens and installs it, which takes
+     about a minute.
+  2. Press **② Log in**. Log in with your Claude account in the browser that opens, then come back.
+  The window checks by itself and says **✓ Ready** when it's done. Claude only writes text here: it can't run
+  anything on your computer.
+- **A Claude API key (pay per use).** For an Anthropic Console account. Press **Add or change key…** and paste it. It's
+  saved only on your computer (in `.human_typer.json` in your home folder, readable only by you).
+- **A local AI (free, offline).** Needs [Ollama](https://ollama.com) and a model. Fine for humanising; Claude writes
+  better. See [Local (free)](#local-free).
+- **Also: type from the Claude app.** Adds Human Typer to the Claude desktop app, so you can ask Claude there to type
+  something. See [Use it from Claude](#use-it-from-claude-connector).
+
 ## Boxes: one paragraph per box
 
-Use the **Boxes** tab when the text needs to go into different places, like the answer spaces on a worksheet, text
-boxes, or the cells of a table.
+On the **Type** tab, pick **Boxes (one paragraph each)** when the text needs to go into different places, like the
+answer spaces on a worksheet, text boxes, or the cells of a table.
 
-![The Boxes tab](screenshot-boxes.png)
+![Boxes on the Type tab](screenshot-boxes.png)
 
 1. Copy your text and press **Paste & split**. Each paragraph gets its own box. (Paragraphs are split at blank lines.
-   If there are none, each line gets its own box.) You can also press **Split the Text tab**, type into the boxes
-   yourself, press **+ Add box**, or remove a box with **✕**.
+   If there are none, each line gets its own box.) You can also press **Split my text** (splits the text from **One
+   block of text**), type into the boxes yourself, press **+ Add box**, or remove a box with **✕**.
 2. Choose how to get from one box to the next:
    - **I click into each box myself.** For text boxes or spaces spread around the page. Press **Type next box**, click
      into the matching spot in Word, and it types that box. Done boxes turn green with a ✓ and the next one turns blue.
@@ -124,7 +185,7 @@ can open it, show you every cell, and jump into the cells you pick by itself.
 ![Boxes connected to a Word document](screenshot-word.png)
 
 1. Save your document as a `.docx` file.
-2. On the **Boxes** tab, put your answers in the boxes (for example with **Paste & split**).
+2. On the **Type** tab, pick **Boxes** and put your answers in the boxes (for example with **Paste & split**).
 3. Press **Connect Word document…** and pick the file. Human Typer opens it in Word and reads its tables.
 4. Under each box, **Goes in:** shows which cell it will be typed into. Each cell is named by the question next to it,
    like *“2. What is photosynthesis?” – row 3, cell 2*. Human Typer fills them in order into the empty cells to start
@@ -149,14 +210,14 @@ Normally Human Typer presses real keys, so Word has to stay in front and you can
 **Type in the background** and it tells Word what to type directly instead. Word fills in live while you switch to other
 apps, browse, or type somewhere else.
 
-- **Text tab:** click in Word where the text should go, come back to Human Typer, and press **Start typing**. It types
-  at Word's cursor, in the document at the front of Word.
-- **Boxes tab:** works with **Word cells** (connect your document first). It moves Word's cursor into each cell without
+- **One block of text:** click in Word where the text should go, come back to Human Typer, and press
+  **Start typing**. It types at Word's cursor, in the document at the front of Word.
+- **Boxes:** works with **Word cells** (connect your document first). It moves Word's cursor into each cell without
   bringing Word to the front.
 - It doesn't work with **I click**, **Auto-click my spots** or **Press Tab**, because those need real clicks and key
   presses. Turn the tick off to use them.
-- Stop it with the **Stop** button. The mouse-corner stop and the F8/Esc keys are off in this mode, since you're using
-  the mouse and keyboard yourself.
+- It's under **More options**. Stop it with the **Stop** button. The mouse-corner stop and the F8/Esc keys are
+  off in this mode, since you're using the mouse and keyboard yourself.
 - **Mac:** the first time, click **OK** when the Mac asks to let Human Typer control Microsoft Word (or turn it on in
   **System Settings → Privacy & Security → Automation**). The Accessibility permission isn't needed for this mode.
 - **Pin it to one spot** (ticked by default) keeps the text going exactly where it started, even if you click
@@ -166,59 +227,27 @@ apps, browse, or type somewhere else.
   with the typing. Untick it to type at Word's cursor instead.
 - Try not to type in that same document yourself, above the pinned spot, while it's typing.
 
-## Check tab: mistakes, AI-style habits and references
+## Polish tab: humanise and check
 
-**Check for mistakes.** Paste your writing (or press **Use the Text tab**). To check just one paragraph, select it
-first. Choose a **fix level** and press **✔ Check**:
+One box for the text, with everything to tidy it up. **Use this ➜** on the Write tab puts Claude's answer here, or
+press **Paste**. When it's ready, press **Send to Type ➜**.
 
-| Level | What it fixes |
-| --- | --- |
-| 1 | Only mistakes that make a sentence confusing (a person has to judge these, so the checker leaves them) |
-| 2 | + spelling, typos and doubled words ("teh", "the the"), in Australian spelling |
-| 3 | + grammar: "they was", "could of", their/there, your/you're, then/than, it's/its, to/too, a/an |
-| 4 | + punctuation, capital letters, missing apostrophes ("dont"), missing full stops, run-on sentences |
-| 5 | + very casual words ("gonna") and the same word used twice close together |
+![The Polish tab](screenshot-polish.png)
 
-Mistakes are highlighted and listed on the right (click one to find it). **Fix all at this level** fixes them and
-tells you how many it noticed but left because they're above your level. Things marked ⚑ are for you to decide.
-It works offline, so it won't catch everything a person would. **Send to the Text tab** when it's ready to type.
+### ✨ Humanise
 
-**🤖 AI check.** Gives an **AI-style score out of 100** (Low / Medium / High) with the reasons, and highlights the
-sentences that show the most AI habits (yellow = some, orange = many). It looks at the writing as a whole: polished
-phrases ("paving the way", "reshaping the landscape"), no contractions, long and even sentences, formal linking words
-("However,", "Ultimately,"), ", doing something" add-ons at the end of sentences, neat lists of three, an essay shape
-ending in "In conclusion", no "I", lots of long words, and no slips at all.
-
-It's a guide, not a verdict. In testing on pieces it hadn't seen, AI-written essays, emails and meeting notes scored
-High, and casual and Year 8 writing scored Low, but a strong student's clean, formal essay scored **Medium** and an
-AI-written story only scored Medium. No checker (including paid ones) can prove who wrote something, so use it to
-start a conversation, never as proof on its own.
-
-**📚 APA 7 references.**
-- **Fix in-text refs** tidies the citations already in the text: `(smith 2020)` → `(Smith, 2020)`,
-  `(smith, jones and lee 2019)` → `(Smith et al., 2019)`, `(Australian Government, no date)` →
-  `(Australian Government, n.d.)`, `(Smith 2020, p 12)` → `(Smith, 2020, p. 12)`.
-- **References…** opens a window where you type a source (people or an organisation, year, title, website or
-  publisher, link). It shows the APA 7 in-text citation and reference list entry as you type.
-  **Insert after sentence** puts the citation at the end of the sentence you clicked in, before the full stop.
-  **Add to reference list** collects sources, and **Put reference list at the end** adds them A to Z under
-  "References". Remember to put titles in italics in your document.
-
-## Rewrite tab (Humaniser)
-
-Rewrites text so it sounds like a person would naturally write or say it, for the audience and format you pick,
+Rewrites the text so it sounds like a person would naturally write or say it, for the audience and format you pick,
 while keeping what it says: names, dates, numbers, quotes and links stay as they are, and nothing new gets added.
 
-- **Audience:** 1 Year 8 · 2 General audience · 3 Team professional · 4 Executive · 5 Finance analyst
-- **Format:** Keep Original · Meeting Notes · PowerPoint Slides · Speaker Notes
-- **AI:** switch between **Local (free)** and **Claude** at the top of the tab. The app remembers your choice.
+- **for:** 1 Year 8 · 2 General audience · 3 Team professional · 4 Executive · 5 Finance analyst
+- **as:** Keep Original · Meeting Notes · PowerPoint Slides · Speaker Notes
 
-Press **✨ Rewrite** and the result appears below as it's written (press **■ Stop** to stop). Edit it there, then
-**Copy** it, or send it to the **Text** tab to type or to the **Check** tab.
+Press **✨ Humanise** and the text is rewritten in place as you watch (press **■ Stop** to stop). **↩ Undo humanise**
+puts your original back. It uses the AI chosen in [Connect Claude](#connect-claude).
 
 **Always read the result before you use it**, especially names, numbers and dates. AI can make mistakes.
 
-### Local (free)
+#### Local (free)
 
 Runs an AI model on your own computer: free, private, no account. Small models are good at making text sound natural
 but are less reliable than Claude at keeping every detail exactly right, and they're slower.
@@ -231,21 +260,56 @@ but are less reliable than Claude at keeping every detail exactly right, and the
    ```
 
    With 16 GB of memory or more, `ollama pull qwen2.5:7b` (about 5 GB) does noticeably better.
-3. In the Rewrite tab, press **Refresh** and pick the model.
+3. In **Connect Claude…**, pick **A local AI on this computer**, press **Refresh** and pick the model.
 
-### Claude
+### Check for mistakes
 
-Better quality, especially for slides and for executive or finance wording. It needs a Claude API key from
-<https://console.anthropic.com> and is paid per use (a few cents per rewrite). Press **Claude key…** and paste it.
-The key is saved only on your computer (in `.human_typer.json` in your home folder, readable only by you). Keep it
-private like a password. The app uses Claude Opus 5.5.
+To check just one paragraph, select it first. Choose a **fix level** and press **✔ Check**:
+
+| Level | What it fixes |
+| --- | --- |
+| 1 | Only mistakes that make a sentence confusing (a person has to judge these, so the checker leaves them) |
+| 2 | + spelling, typos and doubled words ("teh", "the the"), in Australian spelling |
+| 3 | + grammar: "they was", "could of", their/there, your/you're, then/than, it's/its, to/too, a/an |
+| 4 | + punctuation, capital letters, missing apostrophes ("dont"), missing full stops, run-on sentences |
+| 5 | + very casual words ("gonna") and the same word used twice close together |
+
+Mistakes are highlighted and listed on the right (click one to find it). **Fix all** fixes them and
+tells you how many it noticed but left because they're above your level. Things marked ⚑ are for you to decide.
+It works offline, so it won't catch everything a person would.
+
+### 🤖 AI check
+
+Gives an **AI-style score out of 100** (Low / Medium / High) with the reasons, and highlights the
+sentences that show the most AI habits (yellow = some, orange = many). It looks at the writing as a whole: polished
+phrases ("paving the way", "reshaping the landscape"), no contractions, long and even sentences, formal linking words
+("However,", "Ultimately,"), ", doing something" add-ons at the end of sentences, neat lists of three, an essay shape
+ending in "In conclusion", no "I", lots of long words, and no slips at all.
+
+It's a guide, not a verdict. In testing on pieces it hadn't seen, AI-written essays, emails and meeting notes scored
+High, and casual and Year 8 writing scored Low, but a strong student's clean, formal essay scored **Medium** and an
+AI-written story only scored Medium. No checker (including paid ones) can prove who wrote something, so use it to
+start a conversation, never as proof on its own.
+
+### 📚 APA 7 references
+
+Press **📚 APA ▾**:
+
+- **Fix the in-text references** tidies the citations already in the text: `(smith 2020)` → `(Smith, 2020)`,
+  `(smith, jones and lee 2019)` → `(Smith et al., 2019)`, `(Australian Government, no date)` →
+  `(Australian Government, n.d.)`, `(Smith 2020, p 12)` → `(Smith, 2020, p. 12)`.
+- **Make a reference…** opens a window where you type a source (people or an organisation, year, title, website or
+  publisher, link). It shows the APA 7 in-text citation and reference list entry as you type.
+  **Insert after sentence** puts the citation at the end of the sentence you clicked in, before the full stop.
+  **Add to reference list** collects sources, and **Put reference list at the end** adds them A to Z under
+  "References". Remember to put titles in italics in your document.
 
 ## Use it from Claude (connector)
 
 Human Typer can be a **connector** for the Claude desktop app, so Claude can write something with you and then have
 Human Typer type it. It uses your normal Claude plan (no API key, no extra cost).
 
-1. In Human Typer, choose **Claude → Connect to the Claude app…** (in the clean themes it's in the **🎨** menu).
+1. In Human Typer, press **Connect Claude…** (on the Write tab), then **Connect the Claude app**.
    This adds Human Typer to the Claude app's connector settings (and saves a backup of that file).
 2. Quit the Claude app completely and open it again.
 3. In a chat, ask Claude to write something, then say something like *"type it with Human Typer at 60 WPM"*.
@@ -256,20 +320,19 @@ Claude can also ask Human Typer to **stop**, check **how far it's got**, **check
 rewrites text for an audience and format using the Humaniser instructions.
 
 Keep Human Typer in your **Applications** folder (Mac) so the Claude app can always find it. If you move it, connect
-again. To remove it: **Claude → Disconnect from the Claude app**.
+again. To remove it: **Connect Claude… → Disconnect**.
 
 ## Simple view
 
-**Simple view** (in the Themes / 🎨 menu) hides everything except the text box, the speed and Start/Stop. Handy
-when Claude is sending the text anyway.
+**Simple view** (in the Themes / 🎨 menu) hides everything except the Type tab's text box, the speed and
+Start/Stop. Handy when Claude is sending the text anyway.
 
 ## Themes
 
 Pick a look from the **Themes** menu (in the menu bar, or the **🎨 Theme** button at the top right of the clean
 themes):
 
-- **Classic** – the original look, exactly as before.
-- **Clean Light**, **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal:
+- **Clean Light** (the default), **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal:
   - **No square corners:** rounded buttons, text boxes, fields, cards, scrollbars and sliders, round radio buttons
     and rounded checkboxes with a tick.
   - **A progress ring** instead of a straight bar: it fills up with the percentage in the middle, and spins during
@@ -280,8 +343,9 @@ themes):
     underline slides; buttons fade on hover; text boxes glow while you type in them; text the app fills in types
     itself in; highlights and box borders fade; messages type themselves out; a ✓ message slides up when something
     finishes; the Start button pulses during the countdown.
-  - **Speed** and **Make it look human** start folded, with a summary in the heading (like "Speed · 60 WPM").
-    Click a heading to open it.
+  - **Speed**, **Make it look human** and **More options** start folded, with a summary in the heading (like
+    "Speed · 60 WPM"). Click a heading to open it.
+- **Classic** – the original grey look.
 
 Untick **Animations** in the Themes menu to keep a clean theme without the motion. Your choice is remembered.
 

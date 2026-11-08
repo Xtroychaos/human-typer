@@ -4,9 +4,10 @@ Human Typer - types pasted text into any window (Word, Google Docs, Notepad...)
 at a words-per-minute speed you choose, with human-like rhythm.
 
 How to use:
-  1. Paste your text into the box.
-  2. Pick a speed (words per minute).
-  3. Press Start, then click inside your Word document before the countdown ends.
+  1. Write: chat with Claude (your Claude account), or skip this and paste your own text.
+  2. Polish: humanise it and check it for mistakes.
+  3. Type: pick a speed (words per minute), press Start, then click inside your
+     Word document before the countdown ends.
 
 Hotkeys while typing:  F8 = pause / resume,  Esc = stop  (Windows and Linux).
 On every computer, including Macs: move the mouse into the top-left corner of
@@ -1057,13 +1058,22 @@ def load_config():
 
 
 def save_config(cfg):
-    """Settings (including a Claude key, if you add one) stay on this computer only."""
+    """Settings (including a Claude key, if you add one) stay on this computer only.
+    Written to a new file first and then swapped in, so the Claude connector never
+    reads a half-written file."""
+    tmp = CONFIG_PATH + ".tmp"
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
-        os.chmod(CONFIG_PATH, 0o600)     # only you can read it
+        os.chmod(tmp, 0o600)             # only you can read it
+        os.replace(tmp, CONFIG_PATH)
     except Exception:
-        pass
+        try:                             # e.g. Windows wouldn't swap a file that's open: write it directly
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            os.chmod(CONFIG_PATH, 0o600)
+        except Exception:
+            pass
 
 
 def ollama_models():
@@ -1078,16 +1088,16 @@ def ollama_models():
     return sorted(m.get("name", "") for m in data.get("models", []) if m.get("name"))
 
 
-def rewrite_with_ollama(text, audience, fmt, model, on_text, stop_event):
-    """Rewrite with a model running on this computer. Calls on_text with each
-    new piece as it's written. Returns the full rewrite."""
+def ollama_stream(system, messages, model, on_text, stop_event):
+    """Chat with a model running on this computer. messages: the conversation so far
+    ({"role", "content"}). Calls on_text with each new piece as it's written.
+    Returns the full answer."""
     import urllib.request
     import urllib.error
     body = json.dumps({
         "model": model,
         "stream": True,
-        "messages": [{"role": "system", "content": HUMANISER_PROMPT},
-                     {"role": "user", "content": humaniser_request(text, audience, fmt)}],
+        "messages": [{"role": "system", "content": system}] + list(messages),
         "options": {"temperature": 0.3},   # steadier, fewer made-up details
     }).encode("utf-8")
     req = urllib.request.Request(OLLAMA_URL + "/api/chat", data=body,
@@ -1119,9 +1129,15 @@ def rewrite_with_ollama(text, audience, fmt, model, on_text, stop_event):
     return "".join(out)
 
 
-def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
-    """Rewrite with Claude. Calls on_text with each new piece as it's written.
-    Returns the full rewrite."""
+def rewrite_with_ollama(text, audience, fmt, model, on_text, stop_event):
+    """Rewrite with a model running on this computer."""
+    return ollama_stream(HUMANISER_PROMPT, [{"role": "user", "content": humaniser_request(text, audience, fmt)}],
+                         model, on_text, stop_event)
+
+
+def claude_api_stream(system, messages, api_key, on_text, stop_event):
+    """Chat with Claude using an API key. messages: the conversation so far.
+    Calls on_text with each new piece as it's written. Returns the full answer."""
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     try:
@@ -1134,8 +1150,8 @@ def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
             fallbacks="default",
             # The instructions are the same every time, so they're cached (cheaper repeats).
             cache_control={"type": "ephemeral"},
-            system=HUMANISER_PROMPT,
-            messages=[{"role": "user", "content": humaniser_request(text, audience, fmt)}],
+            system=system,
+            messages=list(messages),
         ) as stream:
             for piece in stream.text_stream:
                 if stop_event.is_set():
@@ -1143,7 +1159,7 @@ def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
                 on_text(piece)
             final = stream.get_final_message()
     except anthropic.AuthenticationError as exc:
-        raise RuntimeError("Claude didn't accept the API key. Check it with 'Claude key…'.") from exc
+        raise RuntimeError("Claude didn't accept the API key. Check it in Connect Claude….") from exc
     except anthropic.PermissionDeniedError as exc:
         raise RuntimeError("This API key isn't allowed to use Claude. Check it at console.anthropic.com.") from exc
     except anthropic.RateLimitError as exc:
@@ -1153,14 +1169,253 @@ def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
     except anthropic.APIConnectionError as exc:
         raise RuntimeError("Couldn't reach Claude. Check your internet connection.") from exc
     if final.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to rewrite this text.")
+        raise RuntimeError("Claude declined this one.")
     # If a fallback took over part-way, only the text after the switch is the answer.
     blocks = list(final.content)
     last_switch = max((i for i, b in enumerate(blocks) if b.type == "fallback"), default=-1)
     result = "".join(b.text for b in blocks[last_switch + 1:] if b.type == "text")
     if final.stop_reason == "max_tokens":
-        result += "\n\n[The rewrite was cut off because it got too long.]"
+        result += "\n\n[This was cut off because it got too long.]"
     return result
+
+
+def rewrite_with_claude(text, audience, fmt, api_key, on_text, stop_event):
+    """Rewrite with Claude (API key)."""
+    return claude_api_stream(HUMANISER_PROMPT, [{"role": "user", "content": humaniser_request(text, audience, fmt)}],
+                             api_key, on_text, stop_event)
+
+
+# --------------------------------------------------------------------------- #
+#  Your Claude account (no API key). Human Typer asks Claude Code, Anthropic's
+#  free command-line app, which uses the Claude plan you log in with.
+#
+#    Human Typer  --("claude -p", text in, text streamed back)-->  Claude Code
+# --------------------------------------------------------------------------- #
+
+CHAT_PROMPT = """You are the writing helper inside Human Typer, an app that types text into the user's document (for example Word) as if a person were typing it.
+
+Help the user write what they ask for: emails, essays, answers, notes, messages, stories, and help with homework.
+
+When they ask you to write or rewrite something, reply with only the finished text, ready to paste: no line before it like "Here is your email" and no notes after it, unless they ask for them.
+
+Write the way a real person would: plain words, sentences of different lengths, normal punctuation, and no long dashes.
+
+If you need to know something before you can write it, ask one short question.
+
+When you're helping a student, explain things simply and help them learn, not just give answers."""
+
+CLAUDE_INSTALL = {
+    "unix": "curl -fsSL https://claude.ai/install.sh | bash",
+    "win": "irm https://claude.ai/install.ps1 | iex",
+}
+CLAUDE_SETUP_HELP = ("Claude isn't connected yet. Press Connect Claude… and follow the two steps "
+                     "(install, then log in). It takes about a minute.")
+NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0     # don't flash a black window on Windows
+
+
+def _claude_places():
+    """Where Claude Code usually lives, for when it isn't on this app's PATH
+    (apps opened from the Dock or Start menu don't see your Terminal's PATH)."""
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        local = os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+        return [os.path.join(home, ".local", "bin", "claude.exe"),
+                os.path.join(appdata, "npm", "claude.cmd"),
+                os.path.join(local, "Microsoft", "WinGet", "Links", "claude.exe"),
+                os.path.join(home, "scoop", "shims", "claude.exe")]
+    return [os.path.join(home, ".local", "bin", "claude"),
+            os.path.join(home, ".claude", "local", "claude"),
+            "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+            os.path.join(home, ".npm-global", "bin", "claude"),
+            os.path.join(home, ".volta", "bin", "claude"),
+            os.path.join(home, ".bun", "bin", "claude")]
+
+
+def find_claude_cli():
+    """The path to Claude Code, or None if it isn't installed."""
+    import shutil
+    found = shutil.which("claude")
+    if found:
+        return found
+    for path in _claude_places():
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _claude_env(exe):
+    """Claude Code's own folder (and the usual Node folders) on the PATH, so an
+    npm-installed Claude Code can find Node even when the app was opened from the Dock."""
+    env = dict(os.environ)
+    extra = [os.path.dirname(exe)]
+    if not sys.platform == "win32":
+        extra += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+    env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    return env
+
+
+def _claude_folder():
+    """A folder of its own for the chats, so Claude can carry on the same conversation."""
+    path = os.path.join(os.path.expanduser("~"), ".human_typer_claude")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def claude_account_status():
+    """{"installed", "logged_in" (True/False/None = don't know), "text"}."""
+    import subprocess
+    exe = find_claude_cli()
+    if not exe:
+        return {"installed": False, "logged_in": False,
+                "text": "✗  Claude Code isn't installed yet. Press ① Install (about a minute), then ② Log in."}
+    try:
+        r = subprocess.run([exe, "auth", "status"], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=30, env=_claude_env(exe), cwd=_claude_folder(),
+                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    except Exception as exc:
+        return {"installed": True, "logged_in": None, "text": f"Claude Code is installed, but it didn't start: {exc}"}
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        info = None
+    if isinstance(info, dict) and "loggedIn" in info:
+        if info.get("loggedIn"):
+            acct = info.get("account") if isinstance(info.get("account"), dict) else {}
+            who = info.get("email") or acct.get("email")
+            return {"installed": True, "logged_in": True,
+                    "text": "✓  Ready" + (f": logged in as {who}." if who else ": you're logged in.")}
+        return {"installed": True, "logged_in": False,
+                "text": "Claude Code is installed ✓ but you're not logged in yet. Press ② Log in."}
+    if r.returncode == 1 and "log" in (r.stdout + r.stderr).lower():
+        return {"installed": True, "logged_in": False,
+                "text": "Claude Code is installed ✓ but you're not logged in yet. Press ② Log in."}
+    return {"installed": True, "logged_in": None,
+            "text": "Claude Code is installed ✓. If you haven't logged in yet, press ② Log in."}
+
+
+def open_in_terminal(command):
+    """Run a command in a new Terminal / PowerShell window the person can watch.
+    Returns False if no terminal could be opened (then show the command to copy)."""
+    import subprocess
+    try:
+        if IS_MAC:
+            # A .command file opens in Terminal by itself (no "control Terminal" permission needed).
+            path = os.path.join(_claude_folder(), "Claude setup.command")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"#!/bin/bash\n{command}\necho\necho 'All done. You can close this window.'\n")
+            os.chmod(path, 0o700)
+            subprocess.Popen(["open", path])
+            return True
+        if sys.platform == "win32":
+            subprocess.Popen(["powershell", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", command],
+                             creationflags=0x00000010)          # its own new console window
+            return True
+        import shutil
+        for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
+            if shutil.which(term):
+                run = ["bash", "-c", command + "; exec bash"]
+                subprocess.Popen([term, "--"] + run if term == "gnome-terminal" else [term, "-e"] + run)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def claude_login_command(exe=None):
+    """The command that logs Claude Code in to your Claude account."""
+    exe = exe or find_claude_cli() or _claude_places()[0]
+    if sys.platform == "win32":
+        return f'& "{exe}" auth login'
+    import shlex
+    return f"{shlex.quote(exe)} auth login"
+
+
+def _friendly_claude_error(text):
+    low = text.lower()
+    if any(w in low for w in ("not logged in", "/login", "log in", "login", "invalid api key", "oauth",
+                              "authentication", "unauthorized")):
+        return ("Claude Code isn't logged in to your Claude account. Press Connect Claude… → ② Log in, "
+                "then try again.")
+    if "credit" in low or "usage limit" in low or "rate limit" in low or "limit reached" in low:
+        return "Your Claude plan has reached its limit for now. Try again later. (Claude said: " + text[:160] + ")"
+    return "Claude had a problem: " + text[:300]
+
+
+def claude_account_stream(prompt, system, on_text, stop_event, session=None, keep=False):
+    """Ask Claude through Claude Code, on the Claude plan you're logged in with.
+    Streams the answer to on_text. With keep=True the conversation is saved so
+    session (from the last answer) can carry it on. Returns (answer, session)."""
+    import subprocess
+    import tempfile
+    exe = find_claude_cli()
+    if not exe:
+        raise RuntimeError(CLAUDE_SETUP_HELP)
+    fd, prompt_file = tempfile.mkstemp(prefix="human_typer_", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(system)
+    # No tools: Claude only writes text here, it can't run anything on your computer.
+    args = [exe, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+            "--tools", "", "--strict-mcp-config", "--system-prompt-file", prompt_file]
+    if session:
+        args += ["--resume", session]
+    if not keep:
+        args.append("--no-session-persistence")
+    try:
+        p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, encoding="utf-8", errors="replace", cwd=_claude_folder(),
+                             env=_claude_env(exe), creationflags=NO_WINDOW)
+    except OSError as exc:
+        os.unlink(prompt_file)
+        raise RuntimeError(f"Couldn't start Claude Code ({exc}). Try Connect Claude… → ① Install again.") from exc
+    err_lines = []
+    threading.Thread(target=lambda: err_lines.extend(p.stderr), daemon=True).start()
+    out, final, is_error, sid = [], None, False, session
+
+    def feed():
+        try:
+            p.stdin.write(prompt)
+            p.stdin.close()
+        except OSError:
+            pass
+    threading.Thread(target=feed, daemon=True).start()
+    try:
+        for line in p.stdout:
+            if stop_event.is_set():
+                p.terminate()
+                break
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            sid = msg.get("session_id") or sid
+            kind = msg.get("type")
+            if kind == "stream_event":
+                delta = (msg.get("event") or {}).get("delta") or {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    out.append(delta["text"])
+                    on_text(delta["text"])
+            elif kind == "result":
+                final = msg.get("result") or ""
+                is_error = bool(msg.get("is_error")) or msg.get("subtype", "success") != "success"
+        p.wait(timeout=30)
+    finally:
+        if p.poll() is None:
+            p.kill()
+        try:
+            os.unlink(prompt_file)
+        except OSError:
+            pass
+    if stop_event.is_set():
+        return "".join(out), sid
+    if is_error:
+        raise RuntimeError(_friendly_claude_error(final or "".join(err_lines)))
+    if final is None:
+        raise RuntimeError(_friendly_claude_error("".join(err_lines).strip() or "Claude Code stopped without an answer."))
+    if not out and final:
+        on_text(final)                 # an older Claude Code that doesn't stream: show it all at once
+        out.append(final)
+    return final or "".join(out), sid
 
 
 # --------------------------------------------------------------------------- #
@@ -2197,9 +2452,10 @@ THEMES = {
                    accent2="#4ade80", accent_text="#ffffff", border="#dbe7dc", field="#ffffff",
                    hover="#e7f5e9", sel="#bbf7d0"),
 }
-TAB_NAMES = ["Text", "Boxes", "Check", "Rewrite"]
+TAB_NAMES = ["Write", "Polish", "Type"]
+TAB_WRITE, TAB_POLISH, TAB_TYPE = range(3)
 TOAST_STARTS = ("Finished", "Done", "Fixed", "Copied", "Connected", "Box done", "Claude key saved",
-                "Natural tone on", "Split into", "Added")
+                "Natural tone on", "Split into", "Added", "Ready to type")
 
 
 def _rgb(c):
@@ -2327,7 +2583,7 @@ class App:
         self._start_hotkeys()
         for var in (self.wpm, self.random_speed, self.wpm_lo, self.wpm_hi):
             var.trace_add("write", lambda *_: self._on_settings())
-        for var in (self.typos, self.variation, self.typo_targets):
+        for var in (self.typos, self.variation, self.typo_targets, self.delay, self.background):
             var.trace_add("write", lambda *_: self._section_heads())
         self.box_mode.trace_add("write", lambda *_: self._on_mode_changed())
         self.on_top.trace_add("write", lambda *_: root.attributes("-topmost", self.on_top.get()))
@@ -2351,13 +2607,24 @@ class App:
         bottom = self.bottom = ttk.Frame(main)
         bottom.pack(side="bottom", fill="x")
 
+        # Three tabs, in the order you use them: Write (with Claude) -> Polish -> Type.
         self.tabs = ttk.Notebook(main)
         self.tabs.pack(fill="both", expand=True, padx=12, pady=(10, 4))
+        self._build_write_tab(font)
+        self._build_polish_tab(font)
 
-        # --- Tab 1: one block of text ---
-        one = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(one, text="  Text  ")
-        ttk.Label(one, text="Paste the text you want typed:", font=("", 11, "bold")).pack(anchor="w", pady=(0, 4))
+        # --- Type: one block of text, or one paragraph per box ---
+        typetab = self.type_tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(typetab, text="  Type  ")
+        self.type_mode = tk.StringVar(value="text")
+        switch = ttk.Frame(typetab)
+        switch.pack(fill="x", pady=(0, 6))
+        for label, value in (("One block of text", "text"), ("Boxes (one paragraph each)", "boxes")):
+            ttk.Radiobutton(switch, text=label, value=value, variable=self.type_mode, style="Toolbutton",
+                            command=self._on_type_mode).pack(side="left", padx=(0, 2))
+
+        one = self.one_page = ttk.Frame(typetab)
+        one.pack(fill="both", expand=True)
         box = self.text_card = ttk.Frame(one)
         box.pack(fill="both", expand=True)
         self.text = tk.Text(box, wrap="word", undo=True, height=6, font=font)
@@ -2375,13 +2642,11 @@ class App:
         self.info = tk.StringVar()
         ttk.Label(row, textvariable=self.info, foreground="#555").pack(side="right")
 
-        # --- Tab 2: one paragraph per box ---
-        grid = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(grid, text="  Boxes (one paragraph each)  ")
+        grid = self.boxes_page = ttk.Frame(typetab)       # shown when you pick Boxes
         tools = ttk.Frame(grid)
         tools.pack(fill="x")
         ttk.Button(tools, text="Paste & split", command=self._paste_split).pack(side="left")
-        ttk.Button(tools, text="Split the Text tab", command=self._split_text_tab).pack(side="left", padx=4)
+        ttk.Button(tools, text="Split my text", command=self._split_text_tab).pack(side="left", padx=4)
         ttk.Button(tools, text="+ Add box", command=lambda: self._add_box(focus=True)).pack(side="left")
         ttk.Button(tools, text="Start over", command=self._reset_done).pack(side="right")
         ttk.Button(tools, text="Clear", command=self._clear_boxes).pack(side="right", padx=4)
@@ -2413,8 +2678,6 @@ class App:
         self.box_area.pack(fill="both", expand=True)
         self.box_area.canvas.bind("<Configure>", self._on_box_area_resize, add="+")
 
-        self._build_check_tab(font)
-        self._build_rewrite_tab(font)
         self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
         # Speed
@@ -2460,24 +2723,27 @@ class App:
         ttk.Label(chosen, text="e.g.  the, because, e", foreground="#777").pack(side="left", padx=8)
         human.columnconfigure(1, weight=1)
 
-        # Start options
-        opts = self.opts_row = ttk.Frame(bottom)
-        opts.pack(fill="x", **pad)
+        # More options (folded away in the clean themes, like Speed)
+        more = self.more_frame = ttk.LabelFrame(bottom, text="More options")
+        more.pack(fill="x", **pad)
+        opts = self.opts_row = ttk.Frame(more)
+        opts.grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 2))
         ttk.Label(opts, text="Seconds to click into Word:").pack(side="left")
         ttk.Spinbox(opts, from_=1, to=60, textvariable=self.delay, width=4).pack(side="left", padx=6)
         ttk.Checkbutton(opts, text="Keep this window on top", variable=self.on_top).pack(side="right")
-        bg = self.bg_row = ttk.Frame(bottom)
-        bg.pack(fill="x", padx=12, pady=(0, 4))
+        bg = self.bg_row = ttk.Frame(more)
+        bg.grid(row=1, column=0, sticky="ew", padx=8, pady=2)
         self.bg_check = ttk.Checkbutton(
             bg, text="Type in the background (Word only: keep using your computer while it types)",
             variable=self.background, state="normal" if (IS_MAC or sys.platform == "win32") else "disabled")
         self.bg_check.pack(side="left")
-        pin_row = self.pin_row = ttk.Frame(bottom)
-        pin_row.pack(fill="x", padx=32, pady=(0, 4))
+        pin_row = self.pin_row = ttk.Frame(more)
+        pin_row.grid(row=2, column=0, sticky="ew", padx=(28, 8), pady=(2, 6))
         self.pin_check = ttk.Checkbutton(
             pin_row, text="Pin it to one spot (keeps typing there even if you click somewhere else in Word)",
             variable=self.pin, state="disabled")
         self.pin_check.pack(side="left")
+        more.columnconfigure(0, weight=1)
         self.background.trace_add("write", lambda *_: self.pin_check.configure(
             state="normal" if self.background.get() else "disabled"))
 
@@ -2497,20 +2763,243 @@ class App:
         self.status = tk.StringVar(value="Paste some text, pick a speed, then press Start.")
         ttk.Label(bottom, textvariable=self._shown(self.status), wraplength=640, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
 
-    # ----- check tab -----
-    def _build_check_tab(self, font):
+    # ----- Write tab: chat with Claude -----
+    def _build_write_tab(self, font):
         tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="  Check  ")
+        self.tabs.add(tab, text="  Write  ")
+        cfg = load_config()
+        self.chat_history = []      # the conversation: {"role": "user" / "assistant", "content"}
+        self.chat_session = None    # Claude account: which conversation to carry on
+        self.chat_busy = False
+        self.chat_stop = threading.Event()
+        self.chat_reply = ""
+        self.wf_humanise = tk.BooleanVar(value=cfg.get("wf_humanise", True))
+        self.wf_fix = tk.BooleanVar(value=cfg.get("wf_fix", True))
+        self.wf_type = tk.BooleanVar(value=cfg.get("wf_type", False))
+        for var in (self.wf_humanise, self.wf_fix, self.wf_type):
+            var.trace_add("write", lambda *_: self._save_settings(
+                wf_humanise=self.wf_humanise.get(), wf_fix=self.wf_fix.get(), wf_type=self.wf_type.get()))
+
+        head = ttk.Frame(tab)
+        head.pack(fill="x")
+        self.ai_label = tk.StringVar()
+        ttk.Label(head, textvariable=self.ai_label, foreground="#555").pack(side="left")
+        ttk.Button(head, text="New chat", command=self._chat_new).pack(side="right")
+        ttk.Button(head, text="Connect Claude…", command=self._open_connect).pack(side="right", padx=4)
+
+        card = self.chat_card = ttk.Frame(tab)
+        card.pack(fill="both", expand=True, pady=6)
+        self.chat_log = tk.Text(card, wrap="word", height=8, font=font, state="disabled", padx=4, pady=4)
+        bar = ttk.Scrollbar(card, command=self.chat_log.yview)
+        self.chat_log.configure(yscrollcommand=bar.set)
+        self.chat_log.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        self._chat_bold = tkfont.Font(font=self.chat_log.cget("font"))
+        self._chat_bold.configure(weight="bold")
+        self._chat_tags(None)
+
+        ask = ttk.Frame(tab)
+        ask.pack(fill="x")
+        self.send_btn = ttk.Button(ask, text="Send  ➤", command=self._chat_send)
+        self.send_btn.pack(side="right", fill="y", padx=(6, 0))
+        self.ask_card = ttk.Frame(ask)
+        self.ask_card.pack(side="left", fill="both", expand=True)
+        self.chat_in = tk.Text(self.ask_card, wrap="word", height=3, undo=True, font=font)
+        self.chat_in.pack(fill="both", expand=True)
+        self.chat_in.bind("<Return>", self._chat_enter)
+        self.chat_in.bind("<Shift-Return>", lambda e: None)     # Shift+Enter: a new line
+
+        use = ttk.Frame(tab)
+        use.pack(fill="x", pady=(8, 0))
+        self.use_btn = ttk.Button(use, text="Use this  ➜", command=self._chat_use)
+        self.use_btn.pack(side="left")
+        ttk.Label(use, text="then", foreground="#555").pack(side="left", padx=(8, 4))
+        ttk.Checkbutton(use, text="Humanise", variable=self.wf_humanise).pack(side="left")
+        ttk.Checkbutton(use, text="Fix mistakes", variable=self.wf_fix).pack(side="left", padx=6)
+        ttk.Checkbutton(use, text="Start typing", variable=self.wf_type).pack(side="left")
+        ttk.Button(use, text="Copy", command=lambda: (self._copy(self._chat_pick()),
+                                                     self.chat_status.set("Copied."))).pack(side="right")
+        self.chat_status = tk.StringVar(value="")
+        ttk.Label(tab, textvariable=self._shown(self.chat_status), wraplength=620, justify="left").pack(
+            anchor="w", pady=(6, 0))
+        self._chat_welcome()
+
+    def _chat_tags(self, pal):
+        log = self.chat_log
+        log.tag_configure("you", foreground=pal["accent"] if pal else "#2f4ac0", font=self._chat_bold,
+                          spacing1=6, spacing3=2)
+        log.tag_configure("ai", foreground=pal["text"] if pal else "#111", font=self._chat_bold,
+                          spacing1=6, spacing3=2)
+        log.tag_configure("note", foreground=pal["muted"] if pal else "#555", spacing3=4)
+        log.tag_configure("err", foreground="#dc2626")
+
+    def _chat_write(self, text, tag=None, clear=False):
+        log = self.chat_log
+        log.configure(state="normal")
+        if clear:
+            log.delete("1.0", "end")
+        log.insert("end", text, tag or ())
+        log.configure(state="disabled")
+        log.see("end")
+
+    def _chat_welcome(self):
+        self._chat_write("", clear=True)
+        self._chat_write(
+            "Ask Claude to write something, for example:\n"
+            "   • “Write a short email asking my boss for Friday off”\n"
+            "   • “Help my son answer: why do leaves change colour in autumn? Year 5 level”\n\n"
+            "Then press Use this ➜. It goes to Polish (humanise it and fix mistakes), then to Type, "
+            "ready to type into your document.\n\n", "note")
+        if hasattr(self, "rw_engine"):
+            self._update_ai_label()
+
+    def _chat_new(self):
+        if self.chat_busy:
+            self.chat_stop.set()
+        self.chat_history, self.chat_session, self.chat_reply = [], None, ""
+        self._chat_welcome()
+        self.chat_status.set("")
+        self.chat_in.focus_set()
+
+    def _chat_enter(self, event):
+        self._chat_send()
+        return "break"
+
+    def _chat_send(self):
+        if self.chat_busy:
+            self.chat_stop.set()           # the button says Stop while Claude is writing
+            return
+        msg = self.chat_in.get("1.0", "end-1c").strip()
+        if not msg:
+            self.chat_status.set("Type what you'd like Claude to write, then press Send (or Enter).")
+            return
+        engine = self.rw_engine.get()
+        problem = self._ai_problem(engine)
+        if problem:
+            self.chat_status.set(problem)
+            if engine == "account":
+                self._open_connect()
+            return
+        if not self.chat_history:
+            self._chat_write("", clear=True)
+        self.chat_in.delete("1.0", "end")
+        self._chat_write(("\n" if self.chat_history else "") + "You\n", "you")
+        self._chat_write(msg + "\n")
+        self.chat_history.append({"role": "user", "content": msg})
+        self._chat_write("\n" + self._ai_name(engine) + "\n", "ai")
+        self.chat_reply = ""
+        self.chat_busy = True
+        self.send_btn.configure(text="■  Stop")
+        self.chat_status.set(f"{self._ai_name(engine)} is writing…")
+
+        def piece(text):
+            self.chat_reply += text
+            self._chat_write(text)
+
+        def done(result, stopped):
+            self.chat_busy = False
+            self.send_btn.configure(text="Send  ➤")
+            if result.get("session"):
+                self.chat_session = result["session"]
+            if "error" in result and not stopped:
+                self.chat_history.pop()                       # so you can just press Send again
+                self._chat_write(result["error"] + "\n", "err")
+                self.chat_status.set(result["error"])
+                return
+            reply = self.chat_reply
+            if not stopped and result.get("text") and not reply.strip():
+                reply = result["text"]
+                self._chat_write(reply)
+            self._chat_write("\n")
+            if reply.strip():
+                self.chat_history.append({"role": "assistant", "content": reply})
+            else:
+                self.chat_history.pop()
+            self.chat_status.set("Stopped." if stopped else
+                                 "Done. Press Use this ➜ to send it on, or keep chatting to change it.")
+
+        self.chat_stop = self._ai_start(engine, CHAT_PROMPT, list(self.chat_history), piece, done,
+                                        session=self.chat_session, keep=True)
+
+    def _chat_pick(self):
+        """The text you selected in the chat, or else Claude's last answer."""
+        try:
+            sel = self.chat_log.get("sel.first", "sel.last")
+            if sel.strip():
+                return sel.strip()
+        except tk.TclError:
+            pass
+        for m in reversed(self.chat_history):
+            if m["role"] == "assistant":
+                return m["content"].strip()
+        return ""
+
+    # ----- the workflow: Write -> Polish (humanise, fix) -> Type -----
+    def _chat_use(self):
+        text = self._chat_pick()
+        if not text:
+            self.chat_status.set("Ask Claude to write something first (or select the part of the chat you want).")
+            return
+        if self.rw_busy or self.chat_busy:
+            return
+        self._replace(self.check_text, text)
+        self._clear_check_marks()
+        if self.wf_humanise.get():
+            self.tabs.select(TAB_POLISH)
+            self._rw_start(then=self._workflow_finish)
+        else:
+            self._workflow_finish(True)
+
+    def _workflow_finish(self, ok):
+        if not ok:                               # humanising didn't work: Polish says why
+            self.tabs.select(TAB_POLISH)
+            return
+        text = self.check_text.get("1.0", "end-1c").strip()
+        done = ["humanised"] if self.wf_humanise.get() else []
+        if self.wf_fix.get():
+            level = self.check_level.get()
+            new, fixed, _left = apply_fixes(text, check_text(text), level)
+            if new != text:
+                self._replace(self.check_text, new)
+                text = new
+            done.append(f"fixed {len(fixed)} mistake{'' if len(fixed) == 1 else 's'}")
+        start = self.wf_type.get()
+        self._go_type("text")
+        self._set_text(text, animate=not start)
+        self._update_info()
+        what = (" (" + ", ".join(done) + ")") if done else ""
+        if start:
+            self._start()
+        else:
+            self.status.set(f"Ready to type{what}. Read it over, then press Start typing.")
+
+    # ----- Polish tab: humanise and check, on one piece of text -----
+    def _build_polish_tab(self, font):
+        tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(tab, text="  Polish  ")
+        cfg = load_config()
         self.check_level = tk.IntVar(value=3)
         self.check_issues = []        # from the last Check
         self.check_offset = 0         # where the checked part starts (when you selected a paragraph)
+        engine = cfg.get("engine", "account")
+        self.rw_engine = tk.StringVar(value=engine if engine in ("account", "claude", "local") else "account")
+        self.rw_model = tk.StringVar(value=cfg.get("ollama_model", ""))
+        self.rw_models = []
+        self.rw_audience = tk.StringVar(value=cfg.get("audience", AUDIENCES[2]))
+        self.rw_format = tk.StringVar(value=cfg.get("format", FORMATS[0]))
+        self.rw_stop = threading.Event()
+        self.rw_busy = False
+        self._rw_original = None
+        self._rw_then = None
 
         tools = ttk.Frame(tab)
         tools.pack(fill="x")
         ttk.Button(tools, text="Paste", command=self._check_paste).pack(side="left")
-        ttk.Button(tools, text="Use the Text tab", command=self._check_from_text_tab).pack(side="left", padx=4)
-        ttk.Button(tools, text="Clear", command=lambda: self.check_text.delete("1.0", "end")).pack(side="left")
-        ttk.Button(tools, text="Send to the Text tab ➜", command=self._check_to_text_tab).pack(side="right")
+        ttk.Button(tools, text="Clear", command=lambda: self.check_text.delete("1.0", "end")).pack(side="left", padx=4)
+        self.rw_undo_btn = ttk.Button(tools, text="↩ Undo humanise", command=self._rw_undo, state="disabled")
+        self.rw_undo_btn.pack(side="left")
+        self.to_type_btn = ttk.Button(tools, text="Send to Type  ➜", command=self._check_to_text_tab)
+        self.to_type_btn.pack(side="right")
 
         body = self.check_card = ttk.Frame(tab)
         body.pack(fill="both", expand=True, pady=6)
@@ -2519,8 +3008,7 @@ class App:
         self.check_text.configure(yscrollcommand=bar.set)
         self.check_text.pack(side="left", fill="both", expand=True)
         bar.pack(side="left", fill="y")
-        self.check_list = tk.Listbox(body, width=38, activestyle="none", font=("", 12 if IS_MAC else 9))
-        self.check_list.pack(side="left", fill="both", padx=(6, 0))
+        self.check_list = tk.Listbox(body, width=34, activestyle="none", font=("", 12 if IS_MAC else 9))
         self.check_list.bind("<<ListboxSelect>>", lambda e: self._check_show_selected())
         self.check_rows = []          # what each list line points at: (start, end)
         for tag, colour in (("lvl1", "#fecaca"), ("lvl2", "#fecaca"), ("lvl3", "#fed7aa"), ("lvl4", "#bfdbfe"),
@@ -2528,30 +3016,57 @@ class App:
             self.check_text.tag_configure(tag, background=colour)
         self.check_text.bind("<<Modified>>", self._on_check_text_changed)
 
-        row = ttk.Frame(tab)
-        row.pack(fill="x")
-        ttk.Label(row, text="Fix level").pack(side="left")
-        ttk.Scale(row, from_=1, to=5, variable=self.check_level, orient="horizontal", length=120,
+        hum = ttk.Frame(tab)
+        hum.pack(fill="x")
+        self.rw_btn = ttk.Button(hum, text="✨ Humanise", command=self._rw_start)
+        self.rw_btn.pack(side="left")
+        self.rw_ring = tk.Canvas(hum, width=32, height=32, highlightthickness=0, bd=0)   # spinner (clean themes)
+        ttk.Label(hum, text="for").pack(side="left", padx=(6, 0))
+        ttk.Combobox(hum, textvariable=self.rw_audience, values=AUDIENCES, width=17, state="readonly").pack(
+            side="left", padx=4)
+        ttk.Label(hum, text="as").pack(side="left")
+        ttk.Combobox(hum, textvariable=self.rw_format, values=FORMATS, width=15, state="readonly").pack(
+            side="left", padx=4)
+
+        chk = ttk.Frame(tab)
+        chk.pack(fill="x", pady=(6, 0))
+        ttk.Button(chk, text="✔ Check", command=self._run_check).pack(side="left")
+        ttk.Button(chk, text="Fix all", command=self._fix_all).pack(side="left", padx=4)
+        ttk.Button(chk, text="🤖 AI check", command=self._run_ai_check).pack(side="left")
+        self.apa_btn = ttk.Button(chk, text="📚 APA  ▾", command=self._apa_menu)
+        self.apa_btn.pack(side="left", padx=4)
+        lvl = ttk.Frame(tab)
+        lvl.pack(fill="x", pady=(6, 0))
+        ttk.Label(lvl, text="Fix level").pack(side="left")
+        ttk.Scale(lvl, from_=1, to=5, variable=self.check_level, orient="horizontal", length=110,
                   command=lambda v: self._on_check_level(int(round(float(v))))).pack(side="left", padx=6)
         self.check_level_name = tk.StringVar()
-        ttk.Label(row, textvariable=self.check_level_name, foreground="#555").pack(side="left")
-        row2 = ttk.Frame(tab)
-        row2.pack(fill="x", pady=(6, 0))
-        ttk.Button(row2, text="✔ Check", command=self._run_check).pack(side="left")
-        ttk.Button(row2, text="Fix all at this level", command=self._fix_all).pack(side="left", padx=4)
-        ttk.Button(row2, text="🤖 AI check", command=self._run_ai_check).pack(side="left", padx=(12, 0))
-        ttk.Button(row2, text="📚 References…", command=self._open_references).pack(side="right")
-        ttk.Button(row2, text="Fix in-text refs", command=self._fix_citations).pack(side="right", padx=4)
-        self.check_summary = tk.StringVar(value="Paste text (or select one paragraph), then press Check or AI check.")
-        ttk.Label(tab, textvariable=self._shown(self.check_summary), wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(lvl, textvariable=self.check_level_name, foreground="#555", wraplength=440,
+                  justify="left").pack(side="left")
+
+        self.check_summary = tk.StringVar(
+            value="Paste text here (or press Use this ➜ in Write). Humanise it, check it, then Send to Type.")
+        self.rw_status = self.check_summary          # one message line for the whole tab
+        ttk.Label(tab, textvariable=self._shown(self.check_summary), wraplength=620, justify="left").pack(
+            anchor="w", pady=(6, 0))
         self._on_check_level(3)
+        for var in (self.rw_audience, self.rw_format, self.rw_model):
+            var.trace_add("write", lambda *_: self._rw_save())
+        self._update_ai_label()
+
+    def _apa_menu(self):
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label="Fix the in-text references (APA 7)", command=self._fix_citations)
+        menu.add_command(label="Make a reference…", command=self._open_references)
+        b = self.apa_btn
+        menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
 
     # ----- themes and animations -----
     def _theme_setup(self):
         cfg = load_config()
         self.style = ttk.Style()
         self._classic_theme = self.style.theme_use()
-        self.theme_name = tk.StringVar(value=cfg.get("theme", "Classic") if cfg.get("theme") in THEMES else "Classic")
+        self.theme_name = tk.StringVar(value=cfg["theme"] if cfg.get("theme") in THEMES else "Clean Light")
         self.animations = tk.BooleanVar(value=cfg.get("animations", True))
         self._pal = None
         self._tweens = {}
@@ -2569,7 +3084,7 @@ class App:
             self._classic_defaults[w.winfo_class()] = opts
             w.destroy()
         self._classic_root_bg = self.root.cget("background")
-        self._classic_special = {str(self.rw_out): {"background": "#f7f7f2"}}
+        self._classic_special = {}
 
         # The Themes menu (in the menu bar, and the 🎨 button on the clean themes' tab bar).
         self.theme_menu = tk.Menu(self.root, tearoff=False)
@@ -2582,9 +3097,11 @@ class App:
         self.simple = tk.BooleanVar(value=cfg.get("simple", False))
         self.theme_menu.add_checkbutton(label="Simple view", variable=self.simple, command=self._apply_simple)
         self.theme_menu.add_separator()
-        self.theme_menu.add_command(label="Connect to Claude…", command=self._connect_claude_ui)
+        self.theme_menu.add_command(label="Connect Claude…", command=self._open_connect)
         self.claude_menu = tk.Menu(self.root, tearoff=False)
-        self.claude_menu.add_command(label="Connect to the Claude app…", command=self._connect_claude_ui)
+        self.claude_menu.add_command(label="Connect Claude…", command=self._open_connect)
+        self.claude_menu.add_separator()
+        self.claude_menu.add_command(label="Connect to the Claude app", command=self._connect_claude_ui)
         self.claude_menu.add_command(label="Disconnect from the Claude app", command=lambda: self._connect_claude_ui(True))
         menubar = tk.Menu(self.root)
         menubar.add_cascade(label="Themes", menu=self.theme_menu)
@@ -2593,7 +3110,7 @@ class App:
         self.root.configure(menu=menubar)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         for text, card in ((self.text, self.text_card), (self.check_text, self.check_card),
-                           (self.rw_in, self.rw_in_card), (self.rw_out, self.rw_out_card)):
+                           (self.chat_log, self.chat_card), (self.chat_in, self.ask_card)):
             text.bind("<FocusIn>", lambda e, c=card: self._glow(c, True), add="+")
             text.bind("<FocusOut>", lambda e, c=card: self._glow(c, False), add="+")
 
@@ -2605,12 +3122,18 @@ class App:
         # Animated hover on every button.
         self.root.bind_class("TButton", "<Enter>", lambda e: self._btn_hover(e.widget, True), add="+")
         self.root.bind_class("TButton", "<Leave>", lambda e: self._btn_hover(e.widget, False), add="+")
-        self.start_btn.configure(style="Accent.TButton")
-        self.rw_btn.configure(style="Accent.TButton")
+        for b in (self.start_btn, self.rw_btn, self.send_btn, self.use_btn, self.to_type_btn):
+            b.configure(style="Accent.TButton")
         self._progress_shown = 0.0
         self._apply_theme(self.theme_name.get())
         self._tab_pages = list(self.tabs.tabs())
         self._apply_simple(save=False)
+        if not self.simple.get():           # open on the tab you used last
+            tab = cfg.get("tab", TAB_WRITE)
+            self.tabs.select(tab if tab in (TAB_WRITE, TAB_POLISH, TAB_TYPE) else TAB_WRITE)
+        self._on_tab_changed()
+        if self.rw_engine.get() == "account":
+            self._check_account()
         # The private link the Claude connector uses to hand over text to type.
         self._bridge_jobs = []
         self._bridge_lock = threading.Lock()
@@ -2752,6 +3275,7 @@ class App:
         for tag, colour in (("lvl1", "#fecaca"), ("lvl2", "#fecaca"), ("lvl3", "#fed7aa"), ("lvl4", "#bfdbfe"),
                             ("lvl5", "#e5e7eb"), ("ai1", "#fef08a"), ("ai2", "#fdba74")):
             self.check_text.tag_configure(tag, background=colour, foreground="#111827")
+        self._chat_tags(pal)
         self._refresh_boxes()
 
     def _style_tree(self, w, pal):
@@ -2825,7 +3349,8 @@ class App:
     def _sections(self, pal):
         """In the clean themes, Speed and Make it look human fold open and shut
         (click the heading). Classic keeps them as they were."""
-        for frame, title in ((self.speed_frame, "Speed"), (self.human_frame, "Make it look human")):
+        for frame, title in ((self.speed_frame, "Speed"), (self.human_frame, "Make it look human"),
+                             (self.more_frame, "More options")):
             if pal is None:
                 frame.configure(labelwidget="")
                 if getattr(frame, "_folded", False):
@@ -2846,6 +3371,7 @@ class App:
             self._folded_once = True               # start folded away, with a summary in each heading
             self._fold(self.human_frame, True, animate=False)
             self._fold(self.speed_frame, True, animate=False)
+            self._fold(self.more_frame, True, animate=False)
         self._section_heads()
 
     def _section_heads(self):
@@ -2857,7 +3383,10 @@ class App:
         human = f"typos {self.typos.get():g}% · rhythm {self.variation.get()}"
         if self.typo_targets.get().strip():
             human += f" · always: {self.typo_targets.get().strip()[:20]}"
-        for frame, summary in ((self.speed_frame, speed), (self.human_frame, human)):
+        more = f"{self._safe_int(self.delay, 5)} s to click in"
+        if self.background.get():
+            more += " · in the background"
+        for frame, summary in ((self.speed_frame, speed), (self.human_frame, human), (self.more_frame, more)):
             head = getattr(frame, "_head", None)
             if head is not None:
                 head.configure(text=("▸  " if frame._folded else "▾  ") + frame._title
@@ -3017,7 +3546,7 @@ class App:
 
     def _cards(self, pal):
         """Text boxes sit in rounded cards in the clean themes, and glow when you type in them."""
-        for card in (self.text_card, self.check_card, self.rw_in_card, self.rw_out_card):
+        for card in (self.text_card, self.check_card, self.chat_card, self.ask_card):
             card.configure(style="Card.TFrame" if pal else "TFrame", padding=8 if pal else 0)
         for b in self.boxes:
             self._box_style(b)
@@ -3174,15 +3703,15 @@ class App:
             cfg["simple"] = on
             save_config(cfg)
         for i, page in enumerate(self._tab_pages):
-            if i == 0:
+            if i == TAB_TYPE:
                 continue
             if on:
                 self.tabs.hide(page)
             else:
                 self.tabs.add(page)
         if on:
-            self.tabs.select(0)
-        rows = [self.human_frame, self.opts_row, self.bg_row, self.pin_row]
+            self.tabs.select(TAB_TYPE)
+        rows = [self.human_frame, self.more_frame]
         if not hasattr(self, "_row_packing"):
             self._row_packing = {str(w): w.pack_info() for w in rows}
         for w in rows:
@@ -3196,13 +3725,17 @@ class App:
 
     # ----- Claude connector -----
     def _connect_claude_ui(self, remove=False):
+        """Add Human Typer to (or take it out of) the Claude desktop app."""
+        win = getattr(self, "_connect_win", None)
+        opts = {"parent": win} if win is not None and win.winfo_exists() else {}
         try:
             path = connect_claude(remove)
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Couldn't update the Claude app's settings.\n\n{exc}")
+            messagebox.showerror(APP_NAME, f"Couldn't update the Claude app's settings.\n\n{exc}", **opts)
             return
+        self._connect_refresh()
         if remove:
-            messagebox.showinfo(APP_NAME, "Disconnected. Quit and reopen the Claude app to finish.")
+            messagebox.showinfo(APP_NAME, "Disconnected. Quit and reopen the Claude app to finish.", **opts)
             return
         warn = ""
         if "/AppTranslocation/" in sys.executable or "/Downloads/" in sys.executable:
@@ -3213,9 +3746,8 @@ class App:
             f"{warn}\n\n1. Quit the Claude app completely and open it again."
             "\n2. In a chat, ask Claude to write something, then say: \"type it with Human Typer at 60 WPM\"."
             "\n3. When Human Typer counts down, click into your document."
-            "\n\nYou can also ask Claude to check your writing, fix APA references, or use the "
-            "'humanise' prompt from the + menu. It all runs on your normal Claude plan."
-            f"\n\n(Settings saved in: {path}; a backup of the old file is next to it.)")
+            "\n\nIt runs on your normal Claude plan."
+            f"\n\n(Settings saved in: {path}; a backup of the old file is next to it.)", **opts)
 
     def _bridge_handle(self, path, payload):
         """Jobs from the Claude connector (this runs on the link's own thread)."""
@@ -3252,7 +3784,7 @@ class App:
             if kind == "stop":
                 self._stop()
                 continue
-            self.tabs.select(0)
+            self._go_type("text")
             self._replace(self.text, job["text"])
             self._update_info()
             self.wpm.set(max(1, min(2000, int(job.get("wpm", 60) or 60))))
@@ -3431,84 +3963,7 @@ class App:
                 widget.tag_configure(tag, background=mix(start, colour, t))
         self._tween(("tags", str(widget)), 420, step)
 
-    # ----- rewrite tab (Humaniser) -----
-    def _build_rewrite_tab(self, font):
-        tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="  Rewrite  ")
-        cfg = load_config()
-        self.rw_engine = tk.StringVar(value=cfg.get("engine", "local"))
-        self.rw_model = tk.StringVar(value=cfg.get("ollama_model", ""))
-        self.rw_audience = tk.StringVar(value=cfg.get("audience", AUDIENCES[2]))
-        self.rw_format = tk.StringVar(value=cfg.get("format", FORMATS[0]))
-        self.rw_stop = threading.Event()
-        self.rw_thread = None
-        self.rw_queue = []
-        self.rw_lock = threading.Lock()
-
-        # Which AI: a clear switch at the top.
-        engine = ttk.Frame(tab)
-        engine.pack(fill="x")
-        ttk.Label(engine, text="AI:", font=("", 11, "bold")).pack(side="left")
-        ttk.Radiobutton(engine, text="Local (free)", value="local", variable=self.rw_engine,
-                        style="Toolbutton", command=self._rw_engine_changed).pack(side="left", padx=(6, 0))
-        ttk.Radiobutton(engine, text="Claude", value="claude", variable=self.rw_engine,
-                        style="Toolbutton", command=self._rw_engine_changed).pack(side="left", padx=(2, 10))
-        self.rw_local_bits = ttk.Frame(engine)
-        ttk.Label(self.rw_local_bits, text="Model:").pack(side="left")
-        self.rw_model_box = ttk.Combobox(self.rw_local_bits, textvariable=self.rw_model, width=18, state="readonly")
-        self.rw_model_box.pack(side="left", padx=4)
-        ttk.Button(self.rw_local_bits, text="Refresh", command=self._rw_refresh_models).pack(side="left")
-        self.rw_claude_bits = ttk.Frame(engine)
-        self.rw_key_label = tk.StringVar()
-        ttk.Button(self.rw_claude_bits, text="Claude key…", command=self._rw_set_key).pack(side="left")
-        ttk.Label(self.rw_claude_bits, textvariable=self.rw_key_label, foreground="#555").pack(side="left", padx=6)
-
-        tools = ttk.Frame(tab)
-        tools.pack(fill="x", pady=(6, 0))
-        ttk.Button(tools, text="Paste", command=lambda: self._paste_into(self.rw_in)).pack(side="left")
-        ttk.Button(tools, text="Use the Text tab", command=lambda: self._replace(self.rw_in, self._get_text())).pack(
-            side="left", padx=4)
-        ttk.Button(tools, text="Clear", command=lambda: self.rw_in.delete("1.0", "end")).pack(side="left")
-        pick = ttk.Frame(tab)
-        pick.pack(fill="x", pady=(6, 0))
-        ttk.Label(pick, text="Audience").pack(side="left")
-        ttk.Combobox(pick, textvariable=self.rw_audience, values=AUDIENCES, width=20, state="readonly").pack(
-            side="left", padx=(4, 14))
-        ttk.Label(pick, text="Format").pack(side="left")
-        ttk.Combobox(pick, textvariable=self.rw_format, values=FORMATS, width=18, state="readonly").pack(
-            side="left", padx=4)
-
-        panes = ttk.PanedWindow(tab, orient="vertical")
-        panes.pack(fill="both", expand=True, pady=6)
-        self.rw_in_card, self.rw_out_card = ttk.Frame(panes), ttk.Frame(panes)
-        self.rw_in = tk.Text(self.rw_in_card, wrap="word", undo=True, height=6, font=font)
-        self.rw_out = tk.Text(self.rw_out_card, wrap="word", undo=True, height=6, font=font, background="#f7f7f2")
-        self.rw_in.pack(fill="both", expand=True)
-        self.rw_out.pack(fill="both", expand=True)
-        panes.add(self.rw_in_card, weight=1)
-        panes.add(self.rw_out_card, weight=1)
-
-        row = ttk.Frame(tab)
-        row.pack(fill="x")
-        self.rw_btn = ttk.Button(row, text="✨ Rewrite", command=self._rw_start)
-        self.rw_btn.pack(side="left")
-        self.rw_ring = tk.Canvas(row, width=32, height=32, highlightthickness=0, bd=0)   # spinner (clean themes)
-        ttk.Button(row, text="Copy", command=lambda: self._copy(self.rw_out.get("1.0", "end-1c"))).pack(side="left", padx=4)
-        ttk.Button(row, text="Send to the Check tab", command=self._rw_to_check).pack(side="right")
-        ttk.Button(row, text="Send to the Text tab", command=self._rw_to_text).pack(side="right", padx=4)
-        self.rw_status = tk.StringVar(value="Paste text above, pick the audience and format, then press Rewrite. "
-                                            "Always read the result before you use it.")
-        ttk.Label(tab, textvariable=self._shown(self.rw_status), wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
-        for var in (self.rw_audience, self.rw_format, self.rw_model):
-            var.trace_add("write", lambda *_: self._rw_save())
-        self._rw_engine_changed()
-
-    def _on_rewrite_tab(self):
-        try:
-            return self.tabs.index("current") == 3
-        except tk.TclError:
-            return False
-
+    # ----- small helpers -----
     def _paste_into(self, widget):
         try:
             widget.insert("insert", self.root.clipboard_get())
@@ -3516,35 +3971,123 @@ class App:
             pass
 
     def _replace(self, widget, text):
+        widget.edit_separator()
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
+        widget.edit_separator()
 
     def _copy(self, text):
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
 
+    def _save_settings(self, **values):
+        cfg = load_config()
+        cfg.update(values)
+        save_config(cfg)
+
+    def _spin(self, ring, busy, after):
+        """A spinning ring next to a button while the AI writes (clean themes)."""
+        if not busy() or not self._pal:
+            ring.pack_forget()
+            return
+        if not ring.winfo_ismapped():
+            ring.pack(side="left", padx=4, after=after)
+        self._draw_ring(ring, spin=(time.monotonic() * 300) % 360)
+        self.root.after(30, lambda: self._spin(ring, busy, after))
+
+    # ----- which AI: your Claude account, a Claude API key, or a local AI -----
     def _rw_key(self):
         return load_config().get("claude_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
 
     def _rw_save(self):
-        cfg = load_config()
-        cfg.update(engine=self.rw_engine.get(), ollama_model=self.rw_model.get(),
-                   audience=self.rw_audience.get(), format=self.rw_format.get())
-        save_config(cfg)
+        self._save_settings(engine=self.rw_engine.get(), ollama_model=self.rw_model.get(),
+                            audience=self.rw_audience.get(), format=self.rw_format.get())
 
-    def _rw_engine_changed(self):
-        if self.rw_engine.get() == "claude":
-            self.rw_local_bits.pack_forget()
-            self.rw_claude_bits.pack(side="left")
-            key = self._rw_key()
-            self.rw_key_label.set("key saved ✓ (paid per use, a few cents a rewrite)" if key else
-                                  "no key yet: press Claude key… and paste yours")
+    def _ai_name(self, engine=None):
+        engine = engine or self.rw_engine.get()
+        if engine == "local":
+            return f"Local AI ({self.rw_model.get() or 'no model'})"
+        return "Claude"
+
+    def _ai_problem(self, engine):
+        """Why this AI can't be used yet, or None when it's ready."""
+        if engine == "account":
+            return None if find_claude_cli() else CLAUDE_SETUP_HELP
+        if engine == "claude":
+            return None if self._rw_key() else ("Add your Claude API key first (Connect Claude… → Add key), "
+                                                "or switch to your Claude account.")
+        if not self.rw_model.get():
+            self._rw_refresh_models(quiet=True)
+            return "Pick a local AI model in Connect Claude… (press Refresh). " + \
+                OLLAMA_HELP.split("\n\n")[1].replace("\n", " ")
+        return None
+
+    def _update_ai_label(self, account=None):
+        engine = self.rw_engine.get()
+        if engine == "account":
+            if account is None:
+                account = getattr(self, "_account", None)
+            if not find_claude_cli():
+                text = "Claude isn't connected yet → press Connect Claude…"
+            elif account and account.get("logged_in") is False:
+                text = "Claude Code isn't logged in → press Connect Claude…"
+            else:
+                text = "Using your Claude account ✓"
+        elif engine == "claude":
+            text = "Using Claude (API key ✓)" if self._rw_key() else "Using Claude (API key): no key yet"
         else:
-            self.rw_claude_bits.pack_forget()
-            self.rw_local_bits.pack(side="left")
-            if not self.rw_model_box.cget("values"):
-                self._rw_refresh_models(quiet=True)
+            text = f"Using the local AI ({self.rw_model.get() or 'pick a model'})"
+        self.ai_label.set(text)
+
+    def _engine_changed(self):
+        self.chat_session = None           # a new AI starts its own conversation
+        if self.rw_engine.get() == "local" and not self.rw_models:
+            self._rw_refresh_models(quiet=True)
         self._rw_save()
+        self._update_ai_label()
+        self._connect_refresh()
+
+    def _ai_start(self, engine, system, messages, on_piece, on_done, session=None, keep=False):
+        """Ask the chosen AI in the background. on_piece(text) gets the answer as it's
+        written; on_done({"text", "session"} or {"error"}, stopped) at the end.
+        Returns an Event: set it to stop."""
+        stop = threading.Event()
+        key, model = self._rw_key(), self.rw_model.get()
+        queue, lock, result = [], threading.Lock(), {}
+
+        def emit(piece):
+            with lock:
+                queue.append(piece)
+
+        def work():
+            try:
+                if engine == "account":
+                    # Claude Code remembers the conversation, so only the newest message is sent.
+                    text, sid = claude_account_stream(messages[-1]["content"], system, emit, stop,
+                                                      session=session, keep=keep)
+                    result.update(text=text, session=sid)
+                elif engine == "claude":
+                    result["text"] = claude_api_stream(system, messages, key, emit, stop)
+                else:
+                    result["text"] = ollama_stream(system, messages, model, emit, stop)
+            except Exception as exc:
+                result["error"] = str(exc).replace("\n\n", " ").replace("\n", " ")
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+
+        def pump():
+            with lock:
+                pieces = queue[:]
+                del queue[:]
+            if pieces:
+                on_piece("".join(pieces))
+            if thread.is_alive():
+                self.root.after(40, pump)
+            else:
+                on_done(result, stop.is_set())
+        self.root.after(40, pump)
+        return stop
 
     def _rw_refresh_models(self, quiet=False):
         def work():
@@ -3556,16 +4099,25 @@ class App:
             self.root.after(0, lambda: done(names, err))
 
         def done(names, err):
-            self.rw_model_box.configure(values=names)
+            self.rw_models = names
+            box = getattr(self, "rw_model_box", None)
+            if box is not None and box.winfo_exists():
+                box.configure(values=names)
             if names and self.rw_model.get() not in names:
                 pick = next((n for n in names if n.startswith("llama3.2")), names[0])
                 self.rw_model.set(pick)
-            if err and not quiet:
-                self.rw_status.set(err.replace("\n\n", " ").replace("\n", " "))
-            elif not names and not err and not quiet:
-                self.rw_status.set("The local AI is running but has no models. In Terminal run:   ollama pull llama3.2")
-            elif names and not quiet:
-                self.rw_status.set(f"Local AI ready: {len(names)} model{'' if len(names) == 1 else 's'} found.")
+            msg = None
+            if err:
+                msg = err.replace("\n\n", " ").replace("\n", " ")
+            elif not names:
+                msg = "The local AI is running but has no models. In Terminal run:   ollama pull llama3.2"
+            elif not quiet:
+                msg = f"Local AI ready: {len(names)} model{'' if len(names) == 1 else 's'} found."
+            if msg and hasattr(self, "local_status"):
+                self.local_status.set(msg)
+            if msg and not quiet:
+                self.rw_status.set(msg)
+            self._update_ai_label()
         threading.Thread(target=work, daemon=True).start()
 
     def _rw_set_key(self):
@@ -3597,96 +4149,250 @@ class App:
                 cfg.pop("claude_api_key", None)
             save_config(cfg)
             win.destroy()
-            self._rw_engine_changed()
+            if value:
+                self.rw_engine.set("claude")
+            self._engine_changed()
             self.rw_status.set("Claude key saved." if value else "Claude key removed.")
         ttk.Button(row, text="Save", command=save).pack(side="right")
         ttk.Button(row, text="Remove key", command=lambda: (key.set(""), save())).pack(side="right", padx=4)
         win.bind("<Return>", lambda e: save())
         self._theme_window(win)
 
-    def _rw_start(self):
-        if self.rw_thread is not None and self.rw_thread.is_alive():
+    # ----- Connect Claude: one window for every way of connecting -----
+    def _open_connect(self):
+        old = getattr(self, "_connect_win", None)
+        if old is not None and old.winfo_exists():
+            old.deiconify()
+            old.lift()
+            return
+        win = self._connect_win = tk.Toplevel(self.root)
+        win.title("Connect Claude")
+        win.attributes("-topmost", True)
+        f = ttk.Frame(win, padding=16)
+        f.pack(fill="both", expand=True)
+        wrap = 470
+        ttk.Label(f, text="Connect Claude", font=("", 14, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Pick how Human Typer talks to Claude. You can change it any time.",
+                  foreground="#555").pack(anchor="w", pady=(2, 8))
+
+        def option(value, title, about):
+            ttk.Radiobutton(f, text=title, value=value, variable=self.rw_engine,
+                            command=self._engine_changed).pack(anchor="w", pady=(10, 0))
+            body = ttk.Frame(f, padding=(26, 2, 0, 0))
+            body.pack(fill="x")
+            ttk.Label(body, text=about, foreground="#555", wraplength=wrap, justify="left").pack(anchor="w")
+            return body
+
+        body = option("account", "My Claude account  (recommended)",
+                      "Uses the Claude plan you already pay for (Pro or Max), through Anthropic's free "
+                      "Claude Code app. No API key and nothing extra to pay.")
+        self.acct_status = tk.StringVar(value="Checking…")
+        ttk.Label(body, textvariable=self.acct_status, wraplength=wrap, justify="left").pack(anchor="w", pady=4)
+        row = ttk.Frame(body)
+        row.pack(anchor="w")
+        self.install_btn = ttk.Button(row, text="① Install Claude Code", command=self._install_claude)
+        self.install_btn.pack(side="left")
+        self.login_btn = ttk.Button(row, text="② Log in", command=self._login_claude)
+        self.login_btn.pack(side="left", padx=4)
+        ttk.Button(row, text="Check again", command=self._check_account).pack(side="left")
+
+        body = option("claude", "A Claude API key  (pay per use)",
+                      "For people with an Anthropic Console account. A few cents per answer.")
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text="Add or change key…", command=self._rw_set_key).pack(side="left")
+        self.key_status = tk.StringVar()
+        ttk.Label(row, textvariable=self.key_status, foreground="#555").pack(side="left", padx=6)
+
+        body = option("local", "A local AI on this computer  (free, offline)",
+                      "Needs the free Ollama app from ollama.com and a model (for example: ollama pull llama3.2). "
+                      "Fine for humanising; Claude writes better.")
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Label(row, text="Model:").pack(side="left")
+        self.rw_model_box = ttk.Combobox(row, textvariable=self.rw_model, values=self.rw_models, width=20,
+                                         state="readonly")
+        self.rw_model_box.pack(side="left", padx=4)
+        ttk.Button(row, text="Refresh", command=lambda: self._rw_refresh_models(quiet=True)).pack(side="left")
+        self.local_status = tk.StringVar()
+        ttk.Label(body, textvariable=self.local_status, foreground="#555", wraplength=wrap,
+                  justify="left").pack(anchor="w")
+
+        ttk.Separator(f).pack(fill="x", pady=14)
+        ttk.Label(f, text="Also: type from the Claude app", font=("", 11, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Adds Human Typer to the Claude desktop app, so in any chat there you can say "
+                          "“type it with Human Typer at 60 WPM”.", foreground="#555", wraplength=wrap,
+                  justify="left").pack(anchor="w")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(6, 0))
+        ttk.Button(row, text="Connect the Claude app", command=lambda: self._connect_claude_ui()).pack(side="left")
+        ttk.Button(row, text="Disconnect", command=lambda: self._connect_claude_ui(True)).pack(side="left", padx=4)
+        self.app_status = tk.StringVar()
+        ttk.Label(row, textvariable=self.app_status, foreground="#555").pack(side="left", padx=6)
+
+        done = ttk.Button(f, text="Done", command=win.destroy, style="Accent.TButton")
+        done.pack(anchor="e", pady=(16, 0))
+        self._theme_window(win)
+        self._connect_refresh()
+        self._check_account()
+        if self.rw_engine.get() == "local" and not self.rw_models:
+            self._rw_refresh_models(quiet=True)
+
+    def _connect_refresh(self):
+        """Update the little status lines in the Connect Claude window."""
+        win = getattr(self, "_connect_win", None)
+        if win is None or not win.winfo_exists():
+            return
+        self.key_status.set("key saved ✓" if self._rw_key() else "no key yet")
+        try:
+            with open(claude_config_path(), encoding="utf-8") as fh:
+                on = "human-typer" in (json.load(fh).get("mcpServers") or {})
+        except Exception:
+            on = False
+        self.app_status.set("connected ✓" if on else "not connected")
+
+    def _check_account(self, then=None):
+        """Is Claude Code installed and logged in? (Checked in the background.)"""
+        def work():
+            info = claude_account_status()
+            self.root.after(0, lambda: done(info))
+
+        def done(info):
+            self._account = info
+            if hasattr(self, "acct_status"):
+                try:
+                    self.acct_status.set(info["text"])
+                    self.install_btn.configure(style="Accent.TButton" if not info["installed"] else "TButton")
+                    self.login_btn.configure(style="Accent.TButton" if info["installed"] and
+                                             info["logged_in"] is False else "TButton")
+                except tk.TclError:
+                    pass
+            self._update_ai_label(info)
+            if then:
+                then(info)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _watch_account(self, want, until):
+        """After Install or Log in: keep checking until it's done (or a few minutes pass)."""
+        def then(info):
+            if info.get(want) or time.monotonic() > until:
+                return
+            win = getattr(self, "_connect_win", None)
+            if win is not None and win.winfo_exists():
+                self.root.after(3000, lambda: self._check_account(then))
+        self.root.after(3000, lambda: self._check_account(then))
+
+    def _run_in_terminal(self, command, doing):
+        if open_in_terminal(command):
+            self.acct_status.set(doing)
+            return True
+        self._copy(command)
+        messagebox.showinfo(APP_NAME, "Open a Terminal window, paste this (it's copied already) and press Enter:"
+                                      f"\n\n{command}")
+        return True
+
+    def _install_claude(self):
+        command = CLAUDE_INSTALL["win" if sys.platform == "win32" else "unix"]
+        self.rw_engine.set("account")
+        self._engine_changed()
+        self._run_in_terminal(command, "Installing in the window that just opened… When it says it's done, "
+                                       "press ② Log in.")
+        self._watch_account("installed", time.monotonic() + 600)
+
+    def _login_claude(self):
+        exe = find_claude_cli()
+        if not exe:
+            self.acct_status.set("Install Claude Code first (step ①). If you just did, wait for it to finish.")
+            return
+        self.rw_engine.set("account")
+        self._engine_changed()
+        self._run_in_terminal(claude_login_command(exe),
+                              "A window opened. Log in with your Claude account in the browser, then come back "
+                              "here. This updates by itself.")
+        self._watch_account("logged_in", time.monotonic() + 600)
+
+    # ----- humanise (Polish tab) -----
+    def _rw_start(self, then=None):
+        """Humanise the text in the Polish box, in place. then(ok) runs afterwards (for the workflow)."""
+        if self.rw_busy:
             self.rw_stop.set()             # the button says Stop while it's working
             return
-        text = self.rw_in.get("1.0", "end-1c").strip()
+        text = self.check_text.get("1.0", "end-1c").strip()
         if not text:
-            self.rw_status.set("Paste the text you want rewritten first.")
+            self.rw_status.set("Paste or write the text you want humanised first.")
             return
         engine, audience, fmt = self.rw_engine.get(), self.rw_audience.get(), self.rw_format.get()
-        if engine == "claude":
-            key = self._rw_key()
-            if not key:
-                self.rw_status.set("Add your Claude API key first (Claude key…), or switch the AI to Local (free).")
-                return
-            job = lambda emit: rewrite_with_claude(text, audience, fmt, key, emit, self.rw_stop)
-            who = "Claude"
-        else:
-            model = self.rw_model.get()
-            if not model:
-                self._rw_refresh_models()
-                self.rw_status.set("Pick a local model first (press Refresh). " + OLLAMA_HELP.split("\n\n")[1]
-                                   .replace("\n", " "))
-                return
-            job = lambda emit: rewrite_with_ollama(text, audience, fmt, model, emit, self.rw_stop)
-            who = f"the local AI ({model})"
-        self.rw_stop.clear()
-        self.rw_out.delete("1.0", "end")
-        self.rw_btn.configure(text="■ Stop")
-        self.rw_status.set(f"Rewriting with {who} for {audience[2:]}, as {fmt}…")
-        self._rw_result = None
-
-        def emit(piece):
-            with self.rw_lock:
-                self.rw_queue.append(piece)
-
-        def work():
-            try:
-                self._rw_result = ("ok", job(emit))
-            except Exception as exc:
-                self._rw_result = ("error", str(exc))
-
-        self.rw_thread = threading.Thread(target=work, daemon=True)
-        self.rw_thread.start()
-        self.root.after(50, self._rw_pump)
-
-    def _rw_pump(self):
-        """Move streamed text into the box, and tidy up when it's finished."""
-        with self.rw_lock:
-            pieces, self.rw_queue = self.rw_queue, []
-        if pieces:
-            self.rw_out.insert("end", "".join(pieces))
-            self.rw_out.see("end")
-        if self.rw_thread is not None and self.rw_thread.is_alive():
-            if self._pal:                       # a spinning ring while it writes
-                if not self.rw_ring.winfo_ismapped():
-                    self.rw_ring.pack(side="left", padx=6)
-                self._draw_ring(self.rw_ring, spin=(time.monotonic() * 300) % 360)
-            self.root.after(30 if self._pal else 50, self._rw_pump)
+        problem = self._ai_problem(engine)
+        if problem:
+            self.rw_status.set(problem)
+            if then:
+                then(False)
             return
-        self.rw_ring.pack_forget()
-        self.rw_btn.configure(text="✨ Rewrite")
-        kind, value = self._rw_result or ("error", "Stopped.")
-        if self.rw_stop.is_set():
-            self.rw_status.set("Stopped.")
-        elif kind == "error":
-            self.rw_status.set(value.replace("\n\n", " ").replace("\n", " "))
-        else:
-            if value and value.strip() != self.rw_out.get("1.0", "end-1c").strip():
-                self._replace(self.rw_out, value.strip())   # e.g. a fallback model took over part-way
-            self.rw_status.set("Done. Read it over before you use it, especially names, numbers and dates. "
-                               "You can edit it right here.")
+        self._rw_original = self.check_text.get("1.0", "end-1c")
+        self._clear_check_marks()
+        self.check_text.edit_separator()
+        self.check_text.delete("1.0", "end")
+        self._rw_then = then
+        self.rw_busy = True
+        self.rw_btn.configure(text="■ Stop")
+        self.rw_undo_btn.configure(state="disabled")
+        self.rw_status.set(f"Humanising with {self._ai_name(engine)} for {audience[2:]}, as {fmt}…")
+        self._spin(self.rw_ring, lambda: self.rw_busy, self.rw_btn)
 
-    def _rw_to_text(self):
-        self._set_text(self.rw_out.get("1.0", "end-1c"))
-        self.tabs.select(0)
-        self.status.set("Copied the rewrite to the Text tab, ready to type.")
+        def piece(t):
+            self.check_text.insert("end", t)
+            self.check_text.see("end")
 
-    def _rw_to_check(self):
-        if self._pal:
-            self._reveal(self.check_text, self.rw_out.get("1.0", "end-1c"))
-        else:
-            self._replace(self.check_text, self.rw_out.get("1.0", "end-1c"))
-        self.tabs.select(2)
+        def done(result, stopped):
+            self.rw_busy = False
+            self.rw_btn.configure(text="✨ Humanise")
+            out = self.check_text.get("1.0", "end-1c")
+            ok = False
+            if stopped:
+                if not out.strip():
+                    self._replace(self.check_text, self._rw_original)
+                self.rw_status.set("Stopped.")
+            elif "error" in result:
+                self._replace(self.check_text, self._rw_original)
+                self.rw_status.set(result["error"])
+            else:
+                final = (result.get("text") or "").strip()
+                if final and final != out.strip():
+                    self._replace(self.check_text, final)    # e.g. a fallback model took over part-way
+                ok = bool(self.check_text.get("1.0", "end-1c").strip())
+                self.rw_status.set("Done. Read it over before you use it, especially names, numbers and dates. "
+                                   "↩ Undo puts your original back.")
+            self.check_text.edit_separator()
+            self.rw_undo_btn.configure(state="normal")
+            then_, self._rw_then = self._rw_then, None
+            if then_:
+                then_(ok)
+
+        self.rw_stop = self._ai_start(engine, HUMANISER_PROMPT,
+                                      [{"role": "user", "content": humaniser_request(text, audience, fmt)}],
+                                      piece, done)
+
+    def _rw_undo(self):
+        if self._rw_original is not None:
+            self._replace(self.check_text, self._rw_original)
+            self._clear_check_marks()
+            self.rw_status.set("Your text before humanising is back.")
+        self.rw_undo_btn.configure(state="disabled")
+
+    # ----- moving between tabs -----
+    def _go_type(self, mode="text"):
+        """Show the Type tab, as one block of text or as boxes."""
+        if self.type_mode.get() != mode:
+            self.type_mode.set(mode)
+            self._on_type_mode()
+        self.tabs.select(TAB_TYPE)
+
+    def _on_type_mode(self):
+        boxes = self.type_mode.get() == "boxes"
+        show, hide = (self.boxes_page, self.one_page) if boxes else (self.one_page, self.boxes_page)
+        hide.pack_forget()
+        show.pack(fill="both", expand=True)
+        self._refresh_boxes()
 
     # ----- references -----
     def _fix_citations(self):
@@ -3760,12 +4466,12 @@ class App:
             var.trace_add("write", update)
         update()
 
-        note = tk.StringVar(value="Click in a sentence on the Check tab, then press Insert after sentence.")
+        note = tk.StringVar(value="Click in a sentence on the Polish tab, then press Insert after sentence.")
 
         def insert():
             text = self.check_text.get("1.0", "end-1c")
             if not text.strip():
-                note.set("Put your writing on the Check tab first.")
+                note.set("Put your writing on the Polish tab first.")
                 return
             pos = self.check_text.count("1.0", "insert", "chars")
             pos = pos[0] if isinstance(pos, tuple) else (pos or 0)
@@ -3822,20 +4528,22 @@ class App:
         self.check_level_name.set(f"{level}: {LEVEL_NAMES[level]}")
 
     def _on_tab_changed(self):
-        # The speed and typing settings aren't needed on the Check tab, so hide them for more room.
-        if self._on_check_tab() or self._on_rewrite_tab():
+        # The speed and typing settings are only needed on the Type tab, so hide them for more room.
+        if self._current_tab() != TAB_TYPE:
             self.bottom.pack_forget()
         elif not self.bottom.winfo_ismapped():
             self.bottom.pack(side="bottom", fill="x", before=self.tabs)
         if getattr(self, "_pal", None):
             self._move_underline()
         self._refresh_boxes()
+        if hasattr(self, "_tab_pages"):
+            self._save_settings(tab=self._current_tab())
 
-    def _on_check_tab(self):
+    def _current_tab(self):
         try:
-            return self.tabs.index("current") == 2
+            return self.tabs.index("current")
         except tk.TclError:
-            return False
+            return None
 
     def _check_paste(self):
         try:
@@ -3843,14 +4551,14 @@ class App:
         except tk.TclError:
             pass
 
-    def _check_from_text_tab(self):
-        self.check_text.delete("1.0", "end")
-        self.check_text.insert("1.0", self._get_text())
-
     def _check_to_text_tab(self):
-        self._set_text(self.check_text.get("1.0", "end-1c"))
-        self.tabs.select(0)
-        self.status.set("Copied to the Text tab, ready to type.")
+        text = self.check_text.get("1.0", "end-1c")
+        if not text.strip():
+            self.check_summary.set("There's nothing to send yet. Paste or write something first.")
+            return
+        self._go_type("text")
+        self._set_text(text)
+        self.status.set("Copied from Polish, ready to type. Press Start typing.")
 
     def _on_check_text_changed(self, _event=None):
         if self.check_text.edit_modified():
@@ -3866,6 +4574,15 @@ class App:
         self.check_list.delete(0, "end")
         self.check_rows = []
         self.check_issues = []
+        self._show_check_list()
+
+    def _show_check_list(self):
+        """The list of mistakes sits beside the text only while there's something in it."""
+        if self.check_list.size():
+            if not self.check_list.winfo_ismapped():
+                self.check_list.pack(side="left", fill="both", padx=(6, 0))
+        else:
+            self.check_list.pack_forget()
 
     def _check_part(self):
         """The selected text if you selected some, otherwise all of it. Returns (offset, text)."""
@@ -3917,6 +4634,7 @@ class App:
             msg += f" {left} more noticed but left, because they're above level {level}."
         if level == 1:
             msg += " Confusing sentences (level 1) need a person to read them; this checker can't judge meaning."
+        self._show_check_list()
         self.check_summary.set(msg)
 
     def _fix_all(self):
@@ -3978,6 +4696,7 @@ class App:
                 self.check_list.insert("end", f"     • {sig}")
                 self.check_rows.append((a, b))
         self._fade_tags(self.check_text, {f"ai{x['strength']}" for x in flagged})
+        self._show_check_list()
         meaning = {"High": "lots of habits typical of AI writing",
                    "Medium": "some habits typical of AI writing",
                    "Low": "few habits typical of AI writing"}[report["verdict"]]
@@ -4312,10 +5031,7 @@ class App:
         self.start_btn.configure(text=text)
 
     def _on_boxes_tab(self):
-        try:
-            return self.tabs.index("current") == 1
-        except tk.TclError:
-            return False
+        return self._current_tab() == TAB_TYPE and self.type_mode.get() == "boxes"
 
     # ----- helpers -----
     @staticmethod
@@ -4332,8 +5048,8 @@ class App:
         except (tk.TclError, ValueError):
             return default
 
-    def _set_text(self, text):
-        if getattr(self, "_pal", None):
+    def _set_text(self, text, animate=True):
+        if animate and getattr(self, "_pal", None):
             self._reveal(self.text, text)      # types itself in (clean themes)
             return
         self.text.edit_separator()
@@ -4483,7 +5199,7 @@ class App:
         if not self.background.get():
             return True
         if self._on_boxes_tab() and self.box_mode.get() != "word":
-            self.status.set("Background typing works on the Text tab, and on the Boxes tab with 'Word cells'. "
+            self.status.set("Background typing works with one block of text, and with Boxes using 'Word cells'. "
                             "Turn off 'Type in the background' to use the other ways.")
             return False
         return True
