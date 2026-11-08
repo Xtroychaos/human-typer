@@ -234,6 +234,19 @@ Better quality, especially for slides and for executive or finance wording. It n
 The key is saved only on your computer (in `.human_typer.json` in your home folder, readable only by you). Keep it
 private like a password. The app uses Claude Opus 5.5.
 
+## Themes
+
+Pick a look from the **Themes** menu (in the menu bar, or **🎨 Theme** at the top right of the clean themes):
+
+- **Classic** – the original look, exactly as before.
+- **Clean Light**, **Clean Dark**, **Midnight**, **Ocean**, **Sakura**, **Forest** – flat and minimal, with
+  animations: the window fades in, the tab underline slides, buttons fade on hover, highlights fade in, box borders
+  fade to their new colour, the progress bar glides, messages type themselves out, a ✓ message slides up when
+  something finishes, the Start button pulses during the countdown, and switching themes fades over.
+  **Speed** and **Make it look human** fold open and shut (click the heading) to save space.
+
+Untick **Animations** in the Themes menu to keep a clean theme but turn the motion off. Your choice is remembered.
+
 ## Tips for Word
 
 Word changes some things as you type. The text still ends up right, but it may look a little different:

@@ -16,6 +16,7 @@ Needs:  Python 3.8+  and  pynput  (pip install pynput)
 """
 
 import json
+import math
 import os
 import random
 import re
@@ -23,6 +24,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 APP_NAME = "Human Typer"
@@ -1758,6 +1760,52 @@ class ScrollFrame(ttk.Frame):
 
 DIVIDER = "────── cells that already have words ──────"
 
+# --------------------------------------------------------------------------- #
+#  Themes. "Classic" is the original look. The others are flat and minimal,
+#  with animations (switch them off in the Themes menu).
+# --------------------------------------------------------------------------- #
+
+THEMES = {
+    "Classic": None,
+    "Clean Light": dict(bg="#f7f7f8", panel="#ffffff", text="#1f2328", muted="#6b7280", accent="#6366f1",
+                        accent2="#818cf8", accent_text="#ffffff", border="#e4e4e7", field="#ffffff",
+                        hover="#eef0ff", sel="#c7d2fe"),
+    "Clean Dark": dict(bg="#111317", panel="#1a1d23", text="#e7e8ea", muted="#9aa1ab", accent="#7c83ff",
+                       accent2="#a5abff", accent_text="#0b0c10", border="#2a2e36", field="#16191e",
+                       hover="#252a35", sel="#3a3f73"),
+    "Midnight": dict(bg="#0a0f1f", panel="#111a33", text="#dbe4ff", muted="#8b9bc4", accent="#38bdf8",
+                     accent2="#7dd3fc", accent_text="#04121c", border="#1e2a4a", field="#0d1529",
+                     hover="#18264a", sel="#1e4a6e"),
+    "Ocean": dict(bg="#f0f8fc", panel="#ffffff", text="#0f2a3a", muted="#55788a", accent="#0284c7",
+                  accent2="#38bdf8", accent_text="#ffffff", border="#d3e7f1", field="#ffffff",
+                  hover="#e0f2fe", sel="#bae6fd"),
+    "Sakura": dict(bg="#fff6f8", panel="#ffffff", text="#3b1f2b", muted="#9a6b7d", accent="#ec4899",
+                   accent2="#f9a8d4", accent_text="#ffffff", border="#f7dbe5", field="#ffffff",
+                   hover="#fdeef4", sel="#fbcfe8"),
+    "Forest": dict(bg="#f3f7f2", panel="#ffffff", text="#1c2b1f", muted="#5f7563", accent="#16a34a",
+                   accent2="#4ade80", accent_text="#ffffff", border="#dbe7dc", field="#ffffff",
+                   hover="#e7f5e9", sel="#bbf7d0"),
+}
+TAB_NAMES = ["Text", "Boxes", "Check", "Rewrite"]
+TOAST_STARTS = ("Finished", "Done", "Fixed", "Copied", "Connected", "Box done", "Claude key saved",
+                "Natural tone on", "Split into", "Added")
+
+
+def _rgb(c):
+    c = c.lstrip("#")
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def mix(c1, c2, t):
+    """A colour part-way (t from 0 to 1) between two colours."""
+    a, b = _rgb(c1), _rgb(c2)
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * max(0.0, min(1.0, t))) for x, y in zip(a, b))
+
+
+def ease_out(t):
+    return 1 - (1 - t) ** 3
+
+
 # Border colours for the boxes.
 BOX_IDLE, BOX_NEXT, BOX_TYPING, BOX_DONE = "#c8c8c8", "#3b82f6", "#f59e0b", "#22a559"
 
@@ -1817,6 +1865,7 @@ class App:
         root.attributes("-topmost", True)
         self._add_box()
         self._update_info()
+        self._theme_setup()
         self._poll()
 
         if self.typist_error:
@@ -1825,7 +1874,7 @@ class App:
     # ----- layout -----
     def _build(self):
         pad = {"padx": 12, "pady": 6}
-        main = ttk.Frame(self.root)
+        main = self.main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
         font = ("", 14 if IS_MAC else 11)
         # The settings and buttons go at the bottom first, so they always keep
@@ -1900,7 +1949,7 @@ class App:
         self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_changed())
 
         # Speed
-        speed = ttk.LabelFrame(bottom, text="Speed")
+        speed = self.speed_frame = ttk.LabelFrame(bottom, text="Speed")
         speed.pack(fill="x", **pad)
         ttk.Label(speed, text="Words per minute").grid(row=0, column=0, sticky="w", padx=8, pady=6)
         self.wpm_scale = ttk.Scale(speed, from_=1, to=300, variable=self.wpm, orient="horizontal",
@@ -1922,7 +1971,7 @@ class App:
         speed.columnconfigure(1, weight=1)
 
         # Human touches
-        human = ttk.LabelFrame(bottom, text="Make it look human")
+        human = self.human_frame = ttk.LabelFrame(bottom, text="Make it look human")
         human.pack(fill="x", **pad)
         ttk.Label(human, text="Rhythm variation").grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ttk.Scale(human, from_=0, to=100, variable=self.variation, orient="horizontal",
@@ -1976,7 +2025,7 @@ class App:
         self.progress = ttk.Progressbar(bottom, maximum=100)
         self.progress.pack(fill="x", padx=12, pady=(4, 2))
         self.status = tk.StringVar(value="Paste some text, pick a speed, then press Start.")
-        ttk.Label(bottom, textvariable=self.status, wraplength=640, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+        ttk.Label(bottom, textvariable=self._shown(self.status), wraplength=640, justify="left").pack(anchor="w", padx=12, pady=(0, 10))
 
     # ----- check tab -----
     def _build_check_tab(self, font):
@@ -2024,8 +2073,462 @@ class App:
         ttk.Button(row2, text="📚 References…", command=self._open_references).pack(side="right")
         ttk.Button(row2, text="Fix in-text refs", command=self._fix_citations).pack(side="right", padx=4)
         self.check_summary = tk.StringVar(value="Paste text (or select one paragraph), then press Check or AI check.")
-        ttk.Label(tab, textvariable=self.check_summary, wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(tab, textvariable=self._shown(self.check_summary), wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
         self._on_check_level(3)
+
+    # ----- themes and animations -----
+    def _theme_setup(self):
+        cfg = load_config()
+        self.style = ttk.Style()
+        self._classic_theme = self.style.theme_use()
+        self.theme_name = tk.StringVar(value=cfg.get("theme", "Classic") if cfg.get("theme") in THEMES else "Classic")
+        self.animations = tk.BooleanVar(value=cfg.get("animations", True))
+        self._pal = None
+        self._tweens = {}
+        # Remember what plain Tk widgets look like in Classic, so Classic can be put back exactly.
+        self._classic_defaults = {}
+        for cls in (tk.Text, tk.Listbox, tk.Canvas, tk.Frame):
+            w = cls(self.root)
+            opts = {}
+            for k in ("background", "foreground", "insertbackground", "selectbackground", "selectforeground",
+                      "highlightbackground", "highlightcolor", "highlightthickness", "relief", "borderwidth"):
+                try:
+                    opts[k] = w.cget(k)
+                except tk.TclError:
+                    pass
+            self._classic_defaults[w.winfo_class()] = opts
+            w.destroy()
+        self._classic_root_bg = self.root.cget("background")
+        self._classic_special = {str(self.rw_out): {"background": "#f7f7f2"}}
+
+        # The Themes menu (in the menu bar, and the 🎨 button on the clean themes' tab bar).
+        self.theme_menu = tk.Menu(self.root, tearoff=False)
+        for name in THEMES:
+            self.theme_menu.add_radiobutton(label=name + ("  (original)" if name == "Classic" else ""),
+                                            value=name, variable=self.theme_name,
+                                            command=lambda n=name: self.set_theme(n))
+        self.theme_menu.add_separator()
+        self.theme_menu.add_checkbutton(label="Animations", variable=self.animations, command=self._theme_save)
+        menubar = tk.Menu(self.root)
+        menubar.add_cascade(label="Themes", menu=self.theme_menu)
+        self.root.configure(menu=menubar)
+
+        # The clean themes' tab bar: tab names with an underline that slides to the chosen tab.
+        self.tabbar = tk.Canvas(self.main, height=44, highlightthickness=0, bd=0)
+        self._tab_x = []
+        self.tabbar.bind("<Configure>", lambda e: self._layout_tabbar(animate=False))
+
+        # Animated hover on every button.
+        self.root.bind_class("TButton", "<Enter>", lambda e: self._btn_hover(e.widget, True), add="+")
+        self.root.bind_class("TButton", "<Leave>", lambda e: self._btn_hover(e.widget, False), add="+")
+        self.start_btn.configure(style="Accent.TButton")
+        self.rw_btn.configure(style="Accent.TButton")
+        self._progress_shown = 0.0
+        self._apply_theme(self.theme_name.get())
+        if self._animating():
+            self._fade_window(0.0, 1.0, 450)       # fade in when the app opens
+
+    def _animating(self):
+        return bool(getattr(self, "_pal", None)) and self.animations.get()
+
+    def _theme_save(self):
+        cfg = load_config()
+        cfg.update(theme=self.theme_name.get(), animations=self.animations.get())
+        save_config(cfg)
+
+    def set_theme(self, name):
+        """Switch theme (with a quick fade when animations are on)."""
+        self.theme_name.set(name)
+        self._theme_save()
+        if self.animations.get() and (THEMES.get(name) or self._pal):
+            self._fade_window(1.0, 0.25, 140, then=lambda: (self._apply_theme(name),
+                                                            self._fade_window(0.25, 1.0, 260)))
+        else:
+            self._apply_theme(name)
+
+    def _tween(self, key, ms, step, then=None):
+        """Run step(t) for t from 0 to 1 over ms milliseconds, smoothly. A new tween
+        with the same key replaces the old one."""
+        token = object()
+        self._tweens[key] = token
+        start = time.monotonic()
+
+        def tick():
+            if self._tweens.get(key) is not token:
+                return
+            t = min(1.0, (time.monotonic() - start) * 1000 / max(1, ms))
+            try:
+                step(ease_out(t))
+            except tk.TclError:
+                return
+            if t < 1.0:
+                self.root.after(16, tick)
+            else:
+                self._tweens.pop(key, None)
+                if then:
+                    then()
+        tick()
+
+    def _fade_window(self, a, b, ms, then=None):
+        def step(t):
+            try:
+                self.root.attributes("-alpha", a + (b - a) * t)
+            except tk.TclError:
+                pass
+        self._tween("window-alpha", ms, step, then)
+
+    def _apply_theme(self, name):
+        pal = THEMES.get(name)
+        self._pal = pal
+        st = self.style
+        if pal is None:                                   # Classic: the original look
+            self._tweens.clear()                          # stop any animations still running
+            toast = getattr(self, "_toast_label", None)
+            if toast is not None:
+                toast.destroy()
+                self._toast_label = None
+            self._fade_window(1.0, 1.0, 1)
+            st.theme_use(self._classic_theme)
+            self.tabbar.pack_forget()
+            self.root.configure(background=self._classic_root_bg)
+        else:
+            st.theme_use("clam")
+            fam = next((f for f in ("SF Pro Text", "Helvetica Neue", "Segoe UI", "Inter", "Noto Sans",
+                                    "DejaVu Sans", "Helvetica") if f in tkfont.families()), "TkDefaultFont")
+            size = 13 if IS_MAC else 10
+            base = (fam, size)
+            st.configure(".", background=pal["bg"], foreground=pal["text"], fieldbackground=pal["field"],
+                         bordercolor=pal["border"], lightcolor=pal["bg"], darkcolor=pal["bg"],
+                         troughcolor=pal["border"], focuscolor=pal["accent"], selectbackground=pal["sel"],
+                         selectforeground=pal["text"], insertcolor=pal["text"], font=base)
+            st.configure("TFrame", background=pal["bg"])
+            st.configure("TLabel", background=pal["bg"], foreground=pal["text"])
+            st.configure("TLabelframe", background=pal["bg"], bordercolor=pal["border"], relief="solid",
+                         borderwidth=1, padding=4)
+            st.configure("TLabelframe.Label", background=pal["bg"], foreground=pal["muted"],
+                         font=(fam, size, "bold"))
+            st.configure("TButton", background=pal["panel"], foreground=pal["text"], bordercolor=pal["border"],
+                         lightcolor=pal["panel"], darkcolor=pal["panel"], relief="flat", padding=(8, 3),
+                         focusthickness=0)
+            st.map("TButton", background=[("pressed", pal["sel"]), ("active", pal["hover"]),
+                                          ("disabled", pal["bg"])],
+                   foreground=[("disabled", pal["muted"])], bordercolor=[("active", pal["accent"])])
+            st.configure("Accent.TButton", background=pal["accent"], foreground=pal["accent_text"],
+                         bordercolor=pal["accent"], lightcolor=pal["accent"], darkcolor=pal["accent"],
+                         font=(fam, size, "bold"))
+            st.map("Accent.TButton", background=[("pressed", pal["accent"]), ("active", pal["accent2"]),
+                                                 ("disabled", pal["border"])],
+                   foreground=[("disabled", pal["muted"])])
+            st.configure("Toolbutton", background=pal["panel"], foreground=pal["text"], padding=(8, 3),
+                         bordercolor=pal["border"], relief="flat")
+            st.map("Toolbutton", background=[("selected", pal["accent"]), ("active", pal["hover"])],
+                   foreground=[("selected", pal["accent_text"])])
+            for w in ("TCheckbutton", "TRadiobutton"):
+                st.configure(w, background=pal["bg"], foreground=pal["text"], indicatorbackground=pal["field"],
+                             indicatorforeground=pal["accent"], focusthickness=0)
+                st.map(w, background=[("active", pal["bg"])], indicatorbackground=[("selected", pal["accent"])],
+                       foreground=[("disabled", pal["muted"])])
+            for w in ("TEntry", "TCombobox", "TSpinbox"):
+                st.configure(w, fieldbackground=pal["field"], foreground=pal["text"], bordercolor=pal["border"],
+                             arrowcolor=pal["muted"], background=pal["panel"], padding=2)
+                st.map(w, bordercolor=[("focus", pal["accent"])], fieldbackground=[("readonly", pal["field"])],
+                       foreground=[("disabled", pal["muted"])])
+            st.configure("Horizontal.TProgressbar", background=pal["accent"], troughcolor=pal["border"],
+                         bordercolor=pal["border"], lightcolor=pal["accent"], darkcolor=pal["accent"], thickness=6)
+            st.configure("Horizontal.TScale", background=pal["accent"], troughcolor=pal["border"])
+            for w in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+                st.configure(w, background=pal["panel"], troughcolor=pal["bg"], bordercolor=pal["bg"],
+                             arrowcolor=pal["muted"], lightcolor=pal["panel"], darkcolor=pal["panel"], gripcount=0)
+                st.map(w, background=[("active", pal["hover"])])
+            st.configure("TNotebook", background=pal["bg"], borderwidth=0, tabmargins=0)
+            st.layout("TNotebook.Tab", [])                # the clean themes use their own tab bar
+            st.configure("TPanedwindow", background=pal["bg"])
+            for opt, val in (("background", pal["field"]), ("foreground", pal["text"]),
+                             ("selectBackground", pal["sel"]), ("selectForeground", pal["text"])):
+                self.root.option_add(f"*TCombobox*Listbox.{opt}", val)
+            self.root.configure(background=pal["bg"])
+            if not self.tabbar.winfo_ismapped():
+                self.tabbar.pack(fill="x", padx=12, pady=(8, 0), before=self.tabs)
+            self.tabbar.configure(background=pal["bg"])
+            self._layout_tabbar(animate=False)
+        self._style_tree(self.root, pal)
+        self._sections(pal)
+        for tag, colour in (("lvl1", "#fecaca"), ("lvl2", "#fecaca"), ("lvl3", "#fed7aa"), ("lvl4", "#bfdbfe"),
+                            ("lvl5", "#e5e7eb"), ("ai1", "#fef08a"), ("ai2", "#fdba74")):
+            self.check_text.tag_configure(tag, background=colour, foreground="#111827")
+        self._refresh_boxes()
+
+    def _style_tree(self, w, pal):
+        """Colour the plain Tk widgets (text boxes, lists, cards) for the theme."""
+        cls = w.winfo_class()
+        opts = {}
+        if pal is None:
+            opts = dict(self._classic_defaults.get(cls, {}))
+            if cls == "Frame":
+                opts = {k: v for k, v in opts.items() if k == "background"}
+            elif cls == "Canvas":
+                opts = {k: v for k, v in opts.items() if k in ("background", "highlightthickness")}
+            opts.update(self._classic_special.get(str(w), {}))
+            if cls == "TLabel" and hasattr(w, "_classic_fg"):
+                opts = {"foreground": w._classic_fg}
+        elif cls in ("Text", "Listbox"):
+            opts = dict(background=pal["panel"] if str(w) == str(self.rw_out) else pal["field"],
+                        foreground=pal["text"], insertbackground=pal["text"], selectbackground=pal["sel"],
+                        selectforeground=pal["text"], highlightthickness=1, highlightbackground=pal["border"],
+                        highlightcolor=pal["accent"], relief="flat", borderwidth=0)
+        elif cls == "Canvas":
+            opts = dict(background=pal["bg"], highlightthickness=0)
+        elif cls == "Frame":
+            opts = dict(background=pal["panel"])
+        elif cls == "TLabel":
+            fg = str(w.cget("foreground"))
+            if fg in ("#555", "#777", "#555555", "#777777") or hasattr(w, "_classic_fg"):
+                if not hasattr(w, "_classic_fg"):
+                    w._classic_fg = fg
+                opts = {"foreground": pal["muted"]}
+        for k, v in opts.items():
+            try:
+                w.configure(**{k: v})
+            except tk.TclError:
+                pass
+        for child in w.winfo_children():
+            self._style_tree(child, pal)
+
+    def _layout_tabbar(self, animate=True):
+        pal = self._pal
+        if not pal:
+            return
+        c = self.tabbar
+        c.delete("all")
+        fam = self.style.lookup(".", "font") or "TkDefaultFont"
+        try:
+            f = tkfont.Font(font=fam)
+            f.configure(size=(f.cget("size") or 10) + 1, weight="bold")
+        except tk.TclError:
+            f = tkfont.nametofont("TkDefaultFont")
+        x, self._tab_x = 4, []
+        current = self.tabs.index("current")
+        for i, name in enumerate(TAB_NAMES):
+            w = f.measure(name)
+            colour = pal["text"] if i == current else pal["muted"]
+            item = c.create_text(x + 10, 20, text=name, anchor="w", font=f, fill=colour, tags=(f"tab{i}", "tab"))
+            c.tag_bind(item, "<Button-1>", lambda e, i=i: self.tabs.select(i))
+            c.tag_bind(item, "<Enter>", lambda e, it=item: self._tab_hover(it, True))
+            c.tag_bind(item, "<Leave>", lambda e, it=item: self._tab_hover(it, False))
+            self._tab_x.append((x + 10, x + 10 + w))
+            x += w + 30
+        c.create_line(0, 41, 4000, 41, fill=pal["border"])
+        a, b = self._tab_x[current]
+        self._underline = c.create_rectangle(a, 38, b, 41, fill=pal["accent"], outline="")
+        btn = c.create_text(c.winfo_width() - 12, 20, text="🎨 Theme", anchor="e", font=f, fill=pal["muted"])
+        c.tag_bind(btn, "<Button-1>", lambda e: self.theme_menu.tk_popup(e.x_root, e.y_root))
+        c.tag_bind(btn, "<Enter>", lambda e, it=btn: self._tab_hover(it, True))
+        c.tag_bind(btn, "<Leave>", lambda e, it=btn: self._tab_hover(it, False))
+        self._underline_at = (a, b)
+
+    def _sections(self, pal):
+        """In the clean themes, Speed and Make it look human fold open and shut
+        (click the heading). Classic keeps them as they were."""
+        for frame, title in ((self.speed_frame, "Speed"), (self.human_frame, "Make it look human")):
+            if pal is None:
+                frame.configure(labelwidget="")
+                if getattr(frame, "_folded", False):
+                    frame.grid_propagate(True)
+                    frame.configure(height=0)
+                    frame._folded = False
+                continue
+            head = getattr(frame, "_head", None)
+            if head is None:
+                head = frame._head = ttk.Label(frame, cursor="hand2")
+                head.bind("<Button-1>", lambda e, f=frame: self._fold(f, not f._folded))
+                frame._folded = False
+                frame._title = title
+            head.configure(text=("▸  " if frame._folded else "▾  ") + title, foreground=pal["muted"],
+                           font=(self.style.lookup(".", "font") or "TkDefaultFont"))
+            frame.configure(labelwidget=head)
+        if pal is not None and not getattr(self, "_folded_once", False):
+            self._folded_once = True               # start with "Make it look human" folded away
+            self._fold(self.human_frame, True, animate=False)
+
+    def _fold(self, frame, fold, animate=True):
+        self.root.update_idletasks()
+        head_h = frame._head.winfo_reqheight() + 8
+        if fold:
+            if not frame._folded:
+                frame._full = frame.winfo_height() if frame.winfo_height() > head_h else frame.winfo_reqheight()
+            start, end = frame._full, head_h
+        else:
+            start, end = frame.winfo_height(), getattr(frame, "_full", frame.winfo_reqheight())
+        frame._folded = fold
+        frame._head.configure(text=("▸  " if fold else "▾  ") + frame._title)
+        frame.grid_propagate(False)
+
+        def step(t):
+            frame.configure(height=int(start + (end - start) * t))
+
+        def done():
+            if not fold:
+                frame.grid_propagate(True)
+                frame.configure(height=0)
+        if animate and self._animating():
+            self._tween(("fold", str(frame)), 300, step, done)
+        else:
+            step(1.0)
+            done()
+
+    def _theme_window(self, win):
+        """Pop-up windows follow the theme too."""
+        if not hasattr(self, "_classic_defaults"):
+            return
+        win.configure(background=self._pal["bg"] if self._pal else self._classic_root_bg)
+        self._style_tree(win, self._pal)
+
+    def _tab_hover(self, item, on):
+        pal = self._pal
+        if not pal:
+            return
+        tags = self.tabbar.gettags(item)
+        if f"tab{self.tabs.index('current')}" in tags:
+            return
+        a, b = (pal["muted"], pal["text"]) if on else (pal["text"], pal["muted"])
+        if not self.animations.get():
+            self.tabbar.itemconfigure(item, fill=b)
+            return
+        self._tween(("tabhover", item), 160, lambda t: self.tabbar.itemconfigure(item, fill=mix(a, b, t)))
+
+    def _move_underline(self):
+        pal = self._pal
+        if not pal or not self._tab_x:
+            return
+        i = self.tabs.index("current")
+        for k in range(len(TAB_NAMES)):
+            self.tabbar.itemconfigure(f"tab{k}", fill=pal["text"] if k == i else pal["muted"])
+        (a0, b0), (a1, b1) = self._underline_at, self._tab_x[i]
+        self._underline_at = (a1, b1)
+        if not self.animations.get():
+            self.tabbar.coords(self._underline, a1, 38, b1, 41)
+            return
+
+        def step(t):
+            self.tabbar.coords(self._underline, a0 + (a1 - a0) * t, 38, b0 + (b1 - b0) * t, 41)
+        self._tween("underline", 320, step)
+        # and the page itself slides in a little
+        page = self.tabs.nametowidget(self.tabs.select())
+        self._tween("page", 260, lambda t: page.configure(padding=(8 + 24 * (1 - t), 8, 8, 8)))
+
+    def _btn_hover(self, w, on):
+        if not self._animating() or str(w.cget("state")) == "disabled":
+            return
+        pal = self._pal
+        base = getattr(w, "_base_style", None) or str(w.cget("style")) or "TButton"
+        if base.startswith("Anim"):
+            return
+        w._base_style = base
+        accent = base == "Accent.TButton"
+        c0, c1 = (pal["accent"], pal["accent2"]) if accent else (pal["panel"], pal["hover"])
+        if not on:
+            c0, c1 = c1, c0
+        name = f"Anim{id(w)}.{base}"
+
+        def step(t):
+            colour = mix(c0, c1, t)
+            self.style.configure(name, background=colour, bordercolor=mix(pal["border"], pal["accent"], t if on else 1 - t))
+            self.style.map(name, background=[("pressed", pal["sel"] if not accent else pal["accent"]),
+                                             ("active", colour)])
+            w.configure(style=name)
+
+        def done():
+            if not on:
+                w.configure(style=w._base_style)
+        self._tween(("btn", id(w)), 180, step, done)
+
+    def _set_progress(self, value):
+        if not self._animating():
+            self.progress["value"] = value
+            self._progress_shown = value
+            return
+        start = self._progress_shown
+        if abs(value - start) < 0.1:
+            return
+
+        def step(t):
+            self._progress_shown = start + (value - start) * t
+            self.progress["value"] = self._progress_shown
+        self._tween("progress", 280, step)
+
+    def _shown(self, var):
+        """A copy of a status message that types itself out (and pops up a little
+        'done' message) when animations are on."""
+        shown = tk.StringVar(value=var.get())
+
+        def changed(*_):
+            new = var.get()
+            old = shown.get()
+            if not self._animating() or new[:14] == old[:14]:
+                shown.set(new)
+                return
+            total = len(new)
+            self._tween(("type", str(var)), min(450, 8 * total + 80),
+                        lambda t: shown.set(new[:max(1, int(total * t))]))
+            if new.startswith(TOAST_STARTS):
+                self._toast(new.split(". ")[0].split("  ")[0])
+        var.trace_add("write", changed)
+        return shown
+
+    def _toast(self, text):
+        """A small message that slides up from the bottom of the window, then away."""
+        pal = self._pal
+        if not pal:
+            return
+        old = getattr(self, "_toast_label", None)
+        if old is not None:
+            old.destroy()
+        lab = self._toast_label = tk.Label(self.root, text="  ✓  " + text[:60] + "  ", bg=pal["accent"],
+                                           fg=pal["accent_text"], padx=10, pady=8,
+                                           font=(self.style.lookup(".", "font") or "TkDefaultFont"))
+        self._tween("toast", 380, lambda t: lab.place(relx=0.5, rely=1.0, y=40 - 100 * t, anchor="s"),
+                    then=lambda: self.root.after(1700, lambda: self._tween(
+                        "toast", 300, lambda t: lab.place(relx=0.5, rely=1.0, y=-60 + 120 * t, anchor="s"),
+                        then=lab.destroy)))
+
+    def _pulse_start(self, on):
+        """The Start button gently pulses during the countdown."""
+        if not self._animating():
+            return
+        pal = self._pal
+        if on:
+            phase = (math.sin(time.monotonic() * 6) + 1) / 2
+            self.style.configure("Pulse.Accent.TButton", background=mix(pal["accent"], pal["accent2"], phase))
+            self.style.map("Pulse.Accent.TButton", background=[("disabled", mix(pal["accent"], pal["accent2"], phase))],
+                           foreground=[("disabled", pal["accent_text"])])
+            if str(self.start_btn.cget("style")) != "Pulse.Accent.TButton":
+                self.start_btn.configure(style="Pulse.Accent.TButton")
+        elif str(self.start_btn.cget("style")) == "Pulse.Accent.TButton":
+            self.start_btn.configure(style="Accent.TButton")
+
+    def _card_colour(self, card, colour):
+        """Box borders fade to their new colour."""
+        if getattr(card, "_colour", None) == colour:
+            return
+        old = getattr(card, "_colour", None) or colour
+        card._colour = colour
+        if not self._animating() or old == colour:
+            card.configure(highlightbackground=colour, highlightcolor=colour)
+            return
+        self._tween(("card", str(card)), 300, lambda t: card.configure(
+            highlightbackground=mix(old, colour, t), highlightcolor=mix(old, colour, t)))
+
+    def _fade_tags(self, widget, tags):
+        """Highlights fade in instead of appearing all at once."""
+        if not self._animating():
+            return
+        start = self._pal["field"]
+        targets = {tag: widget.tag_cget(tag, "background") for tag in tags}
+
+        def step(t):
+            for tag, colour in targets.items():
+                widget.tag_configure(tag, background=mix(start, colour, t))
+        self._tween(("tags", str(widget)), 420, step)
 
     # ----- rewrite tab (Humaniser) -----
     def _build_rewrite_tab(self, font):
@@ -2090,7 +2593,7 @@ class App:
         ttk.Button(row, text="Send to the Text tab", command=self._rw_to_text).pack(side="right", padx=4)
         self.rw_status = tk.StringVar(value="Paste text above, pick the audience and format, then press Rewrite. "
                                             "Always read the result before you use it.")
-        ttk.Label(tab, textvariable=self.rw_status, wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(tab, textvariable=self._shown(self.rw_status), wraplength=600, justify="left").pack(anchor="w", pady=(6, 0))
         for var in (self.rw_audience, self.rw_format, self.rw_model):
             var.trace_add("write", lambda *_: self._rw_save())
         self._rw_engine_changed()
@@ -2194,6 +2697,7 @@ class App:
         ttk.Button(row, text="Save", command=save).pack(side="right")
         ttk.Button(row, text="Remove key", command=lambda: (key.set(""), save())).pack(side="right", padx=4)
         win.bind("<Return>", lambda e: save())
+        self._theme_window(win)
 
     def _rw_start(self):
         if self.rw_thread is not None and self.rw_thread.is_alive():
@@ -2398,6 +2902,7 @@ class App:
             row=15, column=0, columnspan=2, sticky="w", pady=(8, 0))
         frame.columnconfigure(1, weight=1)
         self._ref_vars = (v, org, kind, in_text, full, insert, add_to_list, list_to_end)   # for tests
+        self._theme_window(win)
 
     def _on_check_level(self, level):
         self.check_level.set(level)
@@ -2409,6 +2914,8 @@ class App:
             self.bottom.pack_forget()
         elif not self.bottom.winfo_ismapped():
             self.bottom.pack(side="bottom", fill="x", before=self.tabs)
+        if getattr(self, "_pal", None):
+            self._move_underline()
         self._refresh_boxes()
 
     def _on_check_tab(self):
@@ -2484,6 +2991,7 @@ class App:
                 line = f"{d['original']} → {d['suggestion']}  ({d['type']}{', ' + d['note'] if d['note'] else ''})"
             self.check_list.insert("end", line)
             self.check_rows.append((a, b))
+        self._fade_tags(self.check_text, {f"lvl{d['level']}" for d in shown})
         left = len(issues) - len(shown)
         where = "the selected part" if offset or len(part) < len(self.check_text.get("1.0", "end-1c")) else "the text"
         if not shown:
@@ -2548,6 +3056,7 @@ class App:
                 for sig in x["signals"]:
                     self.check_list.insert("end", f"     • {sig}")
                     self.check_rows.append((a, b))
+        self._fade_tags(self.check_text, {f"ai{x['strength']}" for x in flagged})
         strong = sum(1 for x in flagged if x["strength"] == 2)
         msg = (f"{len(flagged)} of {len(sents)} sentences have AI-style habits"
                f"{f' ({strong} with several)' if strong else ''}. Yellow = one habit, orange = several.")
@@ -2594,6 +3103,8 @@ class App:
         entry["spot_row"] = spot_row
         self._show_rows(entry)
         self.boxes.append(entry)
+        if hasattr(self, "_classic_defaults"):
+            self._style_tree(card, self._pal)
         self._layout_boxes(force=True)
         if focus:
             body.focus_set()
@@ -2844,7 +3355,7 @@ class App:
                 colour, label = BOX_IDLE, "(no spot)"
             else:
                 colour, label = BOX_IDLE, ""
-            b["card"].configure(highlightbackground=colour, highlightcolor=colour)
+            self._card_colour(b["card"], colour)
             b["status"].set(label)
 
         filled = [b for b in self.boxes if self._box_text(b).strip()]
@@ -3233,7 +3744,7 @@ class App:
         t = self.typist
         if t is not None:
             if t.total_chars:
-                self.progress["value"] = 100.0 * t.done_chars / t.total_chars
+                self._set_progress(100.0 * t.done_chars / t.total_chars)
             run_kind = self.run["kind"] if self.run else None
             self._track_run(t)
             state = t.state
@@ -3276,6 +3787,7 @@ class App:
                 self.status.set(t.error if run_kind == "word" else "Something went wrong: " + t.error)
 
             self.pause_btn.configure(text=self._label("Resume" if t.paused.is_set() else "Pause"))
+            self._pulse_start(state == "countdown" and t.busy)
             if not t.busy and str(self.start_btn["state"]) == "disabled":
                 self.start_btn.configure(state="normal")
                 self.pause_btn.configure(state="disabled")
