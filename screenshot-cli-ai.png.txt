@@ -1,0 +1,72 @@
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write  2 Polish  3 Type  4 Boxes  │ 5 Settings  6 AI  ? Help 
+  ╭─ TEXT ───────────────────────────────────────────────────────────────────╮
+  │ No text yet.                                                             │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  HOME  start at 1 Write, or bring in your own text ──────────────────────────
+   e Paste / type          v From clipboard        o Open a file
+   t See it all            c Copy                  x Clear
+   ⏎ Write with Claude
+  1-6 jump · ? help · Esc home · q quit
+  › 6
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write  2 Polish  3 Type  4 Boxes  │ 5 Settings   6 AI  ? Help 
+  ╭─ AI · which one writes and humanises ────────────────────────────────────╮
+  │ Using: Claude                                                            │
+  │                                                                          │
+  │ HOW                                                                      │
+  │ ● Your Claude account   ✓  Ready: you're logged in.                      │
+  │ ○ A Claude API key      no key yet · pay per use                         │
+  │ ○ A local AI (Ollama)   free, offline · model: none yet                  │
+  │                                                                          │
+  │ CLAUDE MODEL                                                             │
+  │ ● Claude Code's default                                                  │
+  │ ○ Opus: best writing                                                     │
+  │ ○ Sonnet: faster, a bit cheaper                                          │
+  │ ○ Haiku: fastest and cheapest                                            │
+  │ ○ Fable: most capable, slowest and most expensive                        │
+  │                                                                          │
+  │ Claude app  not connected  (it can type for you)                         │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  AI  pick how, then which model ─────────────────────────────────────────────
+   a Your account          k API key               l Local AI
+   o Opus                  s Sonnet                h Haiku
+   f Fable                 e Default model         i Install Claude Code
+   n Log in                r Check again           c Claude app on
+   x Claude app off
+  1-6 jump · ? help · Esc home · q quit
+  › o
+
+   ⌨  HUMAN TYPER                         Claude Opus ✓  ·  60 WPM  ·  Natural
+  1 Write  2 Polish  3 Type  4 Boxes  │ 5 Settings   6 AI  ? Help 
+  ╭─ AI · which one writes and humanises ────────────────────────────────────╮
+  │ Using: Claude Opus                                                       │
+  │                                                                          │
+  │ HOW                                                                      │
+  │ ● Your Claude account   ✓  Ready: you're logged in.                      │
+  │ ○ A Claude API key      no key yet · pay per use                         │
+  │ ○ A local AI (Ollama)   free, offline · model: none yet                  │
+  │                                                                          │
+  │ CLAUDE MODEL                                                             │
+  │ ○ Claude Code's default                                                  │
+  │ ● Opus: best writing                                                     │
+  │ ○ Sonnet: faster, a bit cheaper                                          │
+  │ ○ Haiku: fastest and cheapest                                            │
+  │ ○ Fable: most capable, slowest and most expensive                        │
+  │                                                                          │
+  │ Claude app  not connected  (it can type for you)                         │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  AI  pick how, then which model ─────────────────────────────────────────────
+   a Your account          k API key               l Local AI
+   o Opus                  s Sonnet                h Haiku
+   f Fable                 e Default model         i Install Claude Code
+   n Log in                r Check again           c Claude app on
+   x Claude app off
+  result ─────────────────────────────────────────────────────────────────────
+  ✓ Using Claude Opus.
+  1-6 jump · ? help · Esc home · q quit
+  › 

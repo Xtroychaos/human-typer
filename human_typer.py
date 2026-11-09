@@ -1066,6 +1066,16 @@ AUDIENCES = ["1 Year 8", "2 General audience", "3 Team professional", "4 Executi
 FORMATS = ["Keep Original", "Meeting Notes", "PowerPoint Slides", "Speaker Notes"]
 OLLAMA_URL = os.environ.get("HUMAN_TYPER_OLLAMA_URL", "http://localhost:11434")
 CLAUDE_MODEL = "claude-opus-5-5"
+# The Claude models you can pick: short name -> (API model id, what it's like).
+# Claude Code (your account) takes the short name; an API key takes the id.
+CLAUDE_MODELS = {
+    "opus": ("claude-opus-5-5", "Opus: best writing"),
+    "sonnet": ("claude-sonnet-5-5", "Sonnet: faster, a bit cheaper"),
+    "haiku": ("claude-haiku-5-5", "Haiku: fastest and cheapest"),
+    "fable": ("claude-fable-5-1", "Fable: most capable, slowest and most expensive"),
+}
+# Haiku has no automatic fallback if Claude's safety checks decline.
+NO_FALLBACK = {"claude-haiku-5-5"}
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".human_typer.json")
 
 OLLAMA_HELP = (
@@ -1169,23 +1179,27 @@ def rewrite_with_ollama(text, audience, fmt, model, on_text, stop_event):
                          model, on_text, stop_event)
 
 
-def claude_api_stream(system, messages, api_key, on_text, stop_event):
-    """Chat with Claude using an API key. messages: the conversation so far.
-    Calls on_text with each new piece as it's written. Returns the full answer."""
+def claude_api_stream(system, messages, api_key, on_text, stop_event, model=None):
+    """Chat with Claude using an API key. messages: the conversation so far. model: a
+    short name from CLAUDE_MODELS (or None for Opus). Calls on_text with each new
+    piece as it's written. Returns the full answer."""
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
+    model_id = CLAUDE_MODELS.get(model or "", (CLAUDE_MODEL,))[0]
+    extra = {}
+    if model_id not in NO_FALLBACK:
+        # If Claude's safety checks decline, Anthropic retries on a suitable model.
+        extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
     try:
         with client.beta.messages.stream(
-            model=CLAUDE_MODEL,
+            model=model_id,
             max_tokens=64000,
             output_config={"effort": "medium"},
-            # If Claude's safety checks decline, Anthropic retries on a suitable model.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             # The instructions are the same every time, so they're cached (cheaper repeats).
             cache_control={"type": "ephemeral"},
             system=system,
             messages=list(messages),
+            **extra,
         ) as stream:
             for piece in stream.text_stream:
                 if stop_event.is_set():
@@ -1376,10 +1390,11 @@ def _friendly_claude_error(text):
     return "Claude had a problem: " + text[:300]
 
 
-def claude_account_stream(prompt, system, on_text, stop_event, session=None, keep=False):
+def claude_account_stream(prompt, system, on_text, stop_event, session=None, keep=False, model=None):
     """Ask Claude through Claude Code, on the Claude plan you're logged in with.
     Streams the answer to on_text. With keep=True the conversation is saved so
-    session (from the last answer) can carry it on. Returns (answer, session)."""
+    session (from the last answer) can carry it on. model: a short name from
+    CLAUDE_MODELS, or None for Claude Code's default. Returns (answer, session)."""
     import subprocess
     import tempfile
     exe = find_claude_cli()
@@ -1391,6 +1406,8 @@ def claude_account_stream(prompt, system, on_text, stop_event, session=None, kee
     # No tools: Claude only writes text here, it can't run anything on your computer.
     args = [exe, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--tools", "", "--strict-mcp-config", "--system-prompt-file", prompt_file]
+    if model:                          # a short name like "sonnet"; none = Claude Code's own default
+        args += ["--model", model]
     if session:
         args += ["--resume", session]
     if not keep:
@@ -4229,6 +4246,7 @@ class App:
         Returns an Event: set it to stop."""
         stop = threading.Event()
         key, model = self._rw_key(), self.rw_model.get()
+        claude_model = load_config().get("claude_model") or None    # picked in the terminal version
         queue, lock, result = [], threading.Lock(), {}
 
         def emit(piece):
@@ -4240,10 +4258,10 @@ class App:
                 if engine == "account":
                     # Claude Code remembers the conversation, so only the newest message is sent.
                     text, sid = claude_account_stream(messages[-1]["content"], system, emit, stop,
-                                                      session=session, keep=keep)
+                                                      session=session, keep=keep, model=claude_model)
                     result.update(text=text, session=sid)
                 elif engine == "claude":
-                    result["text"] = claude_api_stream(system, messages, key, emit, stop)
+                    result["text"] = claude_api_stream(system, messages, key, emit, stop, model=claude_model)
                 else:
                     result["text"] = ollama_stream(system, messages, model, emit, stop)
             except Exception as exc:

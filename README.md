@@ -354,7 +354,7 @@ How it's laid out: every screen is the same workspace, top to bottom:
 | Part | What's in it |
 | --- | --- |
 | **Title bar** | which AI it's using, the speed and the style |
-| **Tab bar** | `1 Write  2 Polish  3 Type  4 Boxes │ 5 Settings  6 Connect  ? Help` (the current one is highlighted) |
+| **Tab bar** | `1 Write  2 Polish  3 Type  4 Boxes │ 5 Settings  6 AI  ? Help` (the current one is highlighted) |
 | **Panel** | the text you're working on (or the chat, the boxes, the settings), always in the same place |
 | **Actions** | what this screen can do, one key each, in a grid |
 | **Result** | what the last action did (mistakes found, the AI score, "Fixed 2"…), until the next action |
@@ -385,8 +385,18 @@ The screens:
 
 - **4 Boxes:** **p** paste and split, **m** changes how it gets to each box (I click → spots → Tab → Word cells),
   **o** points at the spots (move the mouse there, press Enter), **w** picks a .docx and **k** changes its cells.
-- **5 Settings / 6 Connect:** everything else, saved for next time. Connect installs Claude Code and logs in right in
-  the terminal. The terminal and the window share the Claude connection.
+- **5 Settings:** speed, style, typos, countdown, background, and what `/use` does. Saved for next time.
+- **6 AI:** pick which AI writes and humanises, and which model:
+
+  ![Picking the AI](screenshot-cli-ai.png)
+
+  - How: **a** your Claude account (**i** installs Claude Code and **n** logs in, right in the terminal), **k** a
+    Claude API key, or **l** a local AI (pick one of your Ollama models).
+  - Claude model: **o** Opus (best writing), **s** Sonnet (faster), **h** Haiku (fastest and cheapest), **f** Fable
+    (most capable, uses your plan's limits fastest), or **e** Claude Code's default.
+  - The title bar always says which one it's using (e.g. "Claude Sonnet ✓"). Type `/ai` in Write to jump here.
+  - **c** / **x** turn the Claude desktop app connection on and off.
+  - The window app uses the same choice.
 - Set `NO_COLOR=1` (or add `--no-color`) for plain text with no colours.
 
 ### Quick commands (no menus)
@@ -417,6 +427,8 @@ human_typer_cli.py write "a thank-you note for my son's teacher" --audience 2
 | `write "…"` | asks Claude, then humanises, fixes and types the answer (`-y` types without asking) |
 
 Typing options: `--wpm`, `--random 40-90`, `--style Careful/Natural/Messy`, `--typos`, `--delay`, `--background`.
+AI options: `--ai account|key|local` and `--model opus|sonnet|haiku|fable` (or a local model name like `llama3.2`),
+for example `human_typer_cli.py ask "a haiku about Mondays" --model haiku`.
 `--help` lists everything. In the downloaded apps, use the same commands after `HumanTyper-CLI-Windows.exe` or after
 `"/Applications/Human Typer.app/Contents/MacOS/Human Typer" --cli`.
 
