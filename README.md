@@ -351,7 +351,9 @@ Prefer the keyboard? Human Typer also runs in a terminal, with everything the wi
 
 How to use it:
 
-- Each screen has a short menu: type the letter or number in `[ ]` and press **Enter**.
+- Each screen has a short menu: press the letter or number in `[ ]`, with no Enter needed. **Esc** goes back,
+  and **Enter** does the main thing on the screen (like **Start typing** on Type). Yes/no questions are one key too
+  (**y** or **n**).
 - The text you're working on carries from step to step, like the tabs: **1 Write → 2 Polish → 3 Type**.
 - **Write:** type a message and press Enter. `/use` sends Claude's last answer on (humanised and checked, if those
   are switched on in Settings) and offers to type it. `/paste` sends a long message over several lines, `/copy`
@@ -367,7 +369,38 @@ How to use it:
 - **Boxes:** **Spots** asks you to point the mouse at each box's place and press Enter, which is simpler than in the
   window. **Word cells:** drag your .docx into the terminal window to give its path.
 - Settings are saved, so they're the same next time. The terminal and the window share the Claude connection.
-- Set `NO_COLOR=1` for plain text with no colours.
+- Set `NO_COLOR=1` (or add `--no-color`) for plain text with no colours.
+
+### Quick commands (no menus)
+
+For things you do often, one line does it. They work in scripts and chain together with `|` (`-` means "the
+text piped in"):
+
+```bash
+human_typer_cli.py type notes.txt --wpm 70 --style Messy
+```
+
+```bash
+human_typer_cli.py ask "a short email asking for Friday off" | human_typer_cli.py fix -
+```
+
+```bash
+human_typer_cli.py write "a thank-you note for my son's teacher" --audience 2
+```
+
+| Command | What it does |
+| --- | --- |
+| `type FILE` | types the file (.txt or .docx, or `-`) into your document after the countdown |
+| `check FILE` | lists the mistakes (`--level 1-5`) |
+| `fix FILE` | prints it with the mistakes fixed |
+| `humanise FILE` | prints it rewritten to sound natural (`--audience 1-5`, `--format notes/slides/speaker`) |
+| `ai-check FILE` | prints the AI-style score and the reasons |
+| `ask "…"` | asks Claude and prints the answer |
+| `write "…"` | asks Claude, then humanises, fixes and types the answer (`-y` types without asking) |
+
+Typing options: `--wpm`, `--random 40-90`, `--style Careful/Natural/Messy`, `--typos`, `--delay`, `--background`.
+`--help` lists everything. In the downloaded apps, use the same commands after `HumanTyper-CLI-Windows.exe` or after
+`"/Applications/Human Typer.app/Contents/MacOS/Human Typer" --cli`.
 
 ## Simple view
 

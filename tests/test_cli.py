@@ -68,10 +68,19 @@ class FakeTypist:
         pass
 
 
-def run_cli(keys, **kw):
-    """Run the terminal app with these lines typed in. Returns (app, everything it printed)."""
+def run_cli(keys, presses=None, **kw):
+    """Run the terminal app with these lines typed in (and, with presses, these single
+    keypresses for the menus). Returns (app, everything it printed)."""
     keys = list(keys)
     out = io.StringIO()
+    if presses is not None:
+        presses = list(presses)
+
+        def press():
+            if not presses:
+                raise EOFError
+            return presses.pop(0)
+        kw["keys"] = press
 
     def read(prompt=""):
         out.write(prompt)
@@ -80,6 +89,7 @@ def run_cli(keys, **kw):
         return keys.pop(0)
     key = kw.pop("secret", "")
     app = cli.CLI(ht, read=read, out=out, colour=False, typist_factory=FakeTypist, secret=lambda label: key)
+    app.keys = kw.pop("keys", None)
     for k, v in kw.items():
         setattr(app, k, v)
     try:
@@ -196,6 +206,78 @@ class Menus(unittest.TestCase):
         _, out = run_cli(["q"])
         self.assertNotIn("\033[", out)
 
+
+    def test_one_keypress_menus(self):
+        """On a real terminal a single key picks: no Enter. Esc goes back, Enter does the main thing."""
+        app, out = run_cli([], presses=["5", "6", "esc", "3", "", "x", "q"], text="Hi there.")
+        self.assertFalse(ht.load_config()["cli"]["pauses"], "settings: [6] toggled pauses with one key")
+        self.assertIn("press a key", out)
+        self.assertEqual("".join(FakeTypist.last.typed), "Hi there.", "Enter on Type started typing")
+
+    def test_yes_no_is_one_key(self):
+        """Polish → Check → y fixes them, with single keys (the level is typed: it's a number)."""
+        app, out = run_cli(["4"], presses=["2", "l", "c", "y", "", "b", "q"], text="i went to teh shop and we was tired")
+        self.assertEqual(app.text, "I went to the shop and we were tired.")
+        self.assertIn("yes", out)
+
+
+class QuickCommands(unittest.TestCase):
+    """One-line commands with no menus: human_typer_cli.py fix notes.txt, and so on."""
+
+    def run_cmd(self, argv):
+        out = io.StringIO()
+        app = cli.CLI(ht, read=lambda p="": "", out=out, colour=False, typist_factory=FakeTypist)
+        app.pause = lambda: None
+        old = sys.stdout
+        sys.stdout = out
+        try:
+            code = cli.quick(app, cli.parse(argv))
+        finally:
+            sys.stdout = old
+        return code, out.getvalue(), app
+
+    def file(self, text):
+        path = os.path.join(_HOME, "in.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_fix(self):
+        code, out, _ = self.run_cmd(["fix", self.file("i went to teh shop and we was tired"), "--level", "4"])
+        self.assertEqual((code, out.strip()), (0, "I went to the shop and we were tired."))
+
+    def test_check_and_ai_check(self):
+        _, out, _ = self.run_cmd(["check", self.file("i went to teh shop")])
+        self.assertIn("teh  →  the", out)
+        _, out, _ = self.run_cmd(["ai-check", self.file(
+            "Furthermore, it is important to note that technology plays a crucial role in reshaping the "
+            "landscape, paving the way for innovation. In conclusion, it remains essential.")])
+        self.assertIn("AI-style score", out)
+
+    def test_type_with_options(self):
+        code, out, app = self.run_cmd(["type", self.file("Hello there!"), "--wpm", "90", "--style", "messy"])
+        self.assertEqual(code, 0)
+        self.assertEqual("".join(FakeTypist.last.typed), "Hello there!")
+        self.assertEqual((app.s["wpm"], app.s["variation"]), (90, 60))
+
+    def test_ask_and_write(self):
+        def fake(prompt, system, on_text, stop, session=None, keep=False):
+            text = "Hi Sam, could i have Friday off?"
+            on_text(text)
+            return text, "s1"
+        old = ht.claude_account_stream, ht.find_claude_cli
+        ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
+        try:
+            code, out, _ = self.run_cmd(["ask", "write", "an", "email"])
+            self.assertEqual(out.strip(), "Hi Sam, could i have Friday off?")
+            code, out, app = self.run_cmd(["write", "an email", "--no-humanise", "--level", "4", "-y"])
+            self.assertEqual("".join(FakeTypist.last.typed), "Hi Sam, could I have Friday off?")
+        finally:
+            ht.claude_account_stream, ht.find_claude_cli = old
+
+    def test_nothing_to_do(self):
+        code, _, _ = self.run_cmd(["fix", self.file("   ")])
+        self.assertEqual(code, 1)
 
 if __name__ == "__main__":
     unittest.main()

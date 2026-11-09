@@ -5,10 +5,18 @@ as simple menus.
 
     python human_typer_cli.py          (or: python human_typer.py --cli)
 
-Every screen has a short menu: type the letter or number in [ ] and press Enter.
-The text you're working on carries from one step to the next, like the tabs in
-the window app. Ctrl+C stops whatever is happening (a reply, a rewrite, typing)
-and goes back a step.
+Every screen has a short menu: press the letter or number in [ ] (no Enter
+needed). Esc goes back, Enter does the main thing on the screen. The text you're
+working on carries from one step to the next, like the tabs in the window app.
+Ctrl+C stops whatever is happening (a reply, a rewrite, typing) and goes back.
+
+Quick commands, with no menus (handy in scripts, and they chain with |):
+
+    human_typer_cli.py type notes.txt --wpm 70 --style Messy
+    human_typer_cli.py ask "write a short email asking for Friday off" | human_typer_cli.py fix -
+    human_typer_cli.py write "a thank-you note for my son's teacher"   (Claude -> humanise -> fix -> type)
+
+Run  human_typer_cli.py --help  for them all.
 """
 
 import json
@@ -60,6 +68,50 @@ def visible_len(text):
 
 
 # --------------------------------------------------------------------------- #
+#  One keypress, no Enter (on a real terminal)
+# --------------------------------------------------------------------------- #
+
+def getkey():
+    """Wait for one key. Returns it in lower case; "" for Enter and "esc" for Esc.
+    Ctrl+C raises KeyboardInterrupt and Ctrl+D / Ctrl+Z raise EOFError, as usual.
+    Arrow keys and other special keys are ignored."""
+    while True:
+        if sys.platform == "win32":
+            import msvcrt
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):          # a special key: its second half follows
+                msvcrt.getwch()
+                continue
+        else:
+            import select
+            import termios
+            import tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                data = os.read(fd, 4)
+                if data == b"\x1b":
+                    while select.select([fd], [], [], 0.02)[0]:   # an arrow key: swallow the rest
+                        data += os.read(fd, 8)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            ch = data.decode("utf-8", "replace")
+            if ch.startswith("\x1b") and len(ch) > 1:
+                continue
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        if ch in ("\x04", "\x1a"):
+            raise EOFError
+        if ch in ("\r", "\n"):
+            return ""
+        if ch == "\x1b":
+            return "esc"
+        if ch.isprintable() and len(ch) == 1:
+            return ch.lower()
+
+
+# --------------------------------------------------------------------------- #
 #  Clipboard, without extra libraries
 # --------------------------------------------------------------------------- #
 
@@ -103,9 +155,11 @@ def clipboard_set(text):
 # --------------------------------------------------------------------------- #
 
 class CLI:
-    def __init__(self, ht, read=input, out=None, secret=None, typist_factory=None, colour=None):
+    def __init__(self, ht, read=input, out=None, secret=None, typist_factory=None, colour=None, keys=None):
         self.ht = ht
         self.read_fn = read
+        self.keys = keys               # one-keypress menus (None: type the choice and press Enter)
+        self._account = None           # Claude login status, checked once (it can take a second or two)
         self.out = out or sys.stdout
         self.secret_fn = secret
         self.p = Paint(colours_wanted(self.out) if colour is None else colour)
@@ -144,6 +198,15 @@ class CLI:
         return answer if answer else ("" if default is None else str(default))
 
     def yes(self, label, default=True):
+        if self.keys:
+            self.out.write(f"  {self.p('›', 'accent', 'bold')} {label} " + self.p("(Y/n) " if default else "(y/N) ", "grey"))
+            self.out.flush()
+            while True:
+                k = self.keys()
+                if k in ("y", "n", "", "esc"):
+                    answer = default if k == "" else k == "y"
+                    self.say("yes" if answer else "no")
+                    return answer
         answer = self.ask(label + (" (Y/n)" if default else " (y/N)")).lower()
         return default if not answer else answer.startswith("y")
 
@@ -163,6 +226,12 @@ class CLI:
             self.say("  " + self.p((icon if i == 0 else " ") + " " + line, kind))
 
     def pause(self):
+        if self.keys:
+            self.out.write(self.p("  press any key ", "grey"))
+            self.out.flush()
+            self.keys()
+            self.say("")
+            return
         self.read(self.p("  press Enter to go on ", "grey"))
 
     def rule(self, title=""):
@@ -225,7 +294,35 @@ class CLI:
             k = self.p(f"[{key}]", "accent", "bold")
             self.say(f"   {k} {label:<16}" + (self.p(detail, "grey") if detail else ""))
         self.say("")
+        if self.keys:
+            valid = {item[0] for item in items if item and item[0]}
+            hint = "press a key" + (" · Enter = " + next(i[1] for i in items if i and i[0] == "enter")
+                                    if "enter" in valid else "") + " · Esc = back"
+            self.out.write(f"  {self.p('›', 'accent', 'bold')} {self.p(hint, 'grey')} ")
+            self.out.flush()
+            while True:
+                k = self.keys()
+                if k == "esc":
+                    k = "b" if "b" in valid else "q" if "q" in valid else ""
+                if k in valid or k == "" or (k == "b" and "b" in valid):
+                    self.say(self.p(k or "enter", "accent"))
+                    return k
         return self.ask(prompt).lower()
+
+    def pick(self, keys):
+        """Read one choice from these keys (for screens that draw their own menu)."""
+        self.say("")
+        if self.keys:
+            self.out.write(f"  {self.p('›', 'accent', 'bold')} {self.p('press a key · Esc = back', 'grey')} ")
+            self.out.flush()
+            while True:
+                k = self.keys()
+                if k == "esc":
+                    k = "b"
+                if k in keys or k == "":
+                    self.say(self.p(k or "enter", "accent"))
+                    return k
+        return self.ask("choose").lower()
 
     def save(self):
         cfg = self.ht.load_config()
@@ -936,7 +1033,14 @@ class CLI:
                 self.say("")
                 self.note(f"Box {self.boxes.index(b) + 1} of {len(self.boxes)}: press Enter, then click into its spot.",
                           "accent")
-                if self.ask("Enter = go, s = stop").lower().startswith("s"):
+                if self.keys:
+                    self.out.write(f"  {self.p('›', 'accent', 'bold')} " + self.p("Enter = go · Esc = stop ", "grey"))
+                    self.out.flush()
+                    stop = self.keys() in ("esc", "s", "b")
+                    self.say("")
+                else:
+                    stop = self.ask("Enter = go, s = stop").lower().startswith("s")
+                if stop:
                     return
                 if not self.type_text(b["text"], label=f"Box {self.boxes.index(b) + 1}"):
                     return
@@ -1109,7 +1213,9 @@ class CLI:
             self.rule("Connect Claude")
             names = {"account": "My Claude account", "claude": "A Claude API key", "local": "A local AI"}
             self.note("Using: " + self.p(names[self.engine], "bold"), "accent")
-            acct = ht.claude_account_status()
+            if self._account is None:
+                self._account = ht.claude_account_status()
+            acct = self._account
             self.say("")
             self.say(f"   {self.p('[1]', 'accent', 'bold')} {'My Claude account':<20}" +
                      self.p("recommended · your Pro/Max plan · no API key", "grey"))
@@ -1131,9 +1237,12 @@ class CLI:
                      self.p("let the Claude desktop app type with Human Typer · " +
                             ("connected ✓" if linked else "not connected"), "grey"))
             self.say(f"       {self.p('[d]', 'accent')} disconnect it")
+            self.say(f"   {self.p('[r]', 'accent', 'bold')} Check again")
             self.say(f"   {self.p('[b]', 'accent', 'bold')} Back")
-            self.say("")
-            choice = self.ask("choose").lower()
+            choice = self.pick("123ilkmadrb")
+            if choice == "r":
+                self._account = None
+                continue
             if choice in ("b", ""):
                 self.save()
                 return
@@ -1148,6 +1257,7 @@ class CLI:
                     run = (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
                            if sys.platform == "win32" else ["bash", "-c", cmd])
                     subprocess.run(run)
+                    self._account = None
                     self.engine = "account"
                     self.note("Now press [l] to log in.", "accent")
                     self.pause()
@@ -1159,6 +1269,7 @@ class CLI:
                     continue
                 self.note("Log in with your Claude account in the browser that opens, then come back here.", "accent")
                 subprocess.run([exe, "auth", "login"], env=ht._claude_env(exe))
+                self._account = None
                 self.engine = "account"
             elif choice == "k":
                 key = self.secret("Paste your Claude API key (sk-ant-…), or leave blank to remove it:").strip()
@@ -1227,9 +1338,155 @@ class CLI:
         self.pause()
 
 
-def main(ht=None):
+COMMANDS = {
+    "type": "type FILE (or - for what's piped in) into your document, after the countdown",
+    "check": "list the mistakes in FILE (up to --level)",
+    "fix": "print FILE with its mistakes fixed (up to --level)",
+    "humanise": "print FILE rewritten to sound natural (--audience, --format)",
+    "ai-check": "print FILE's AI-style score, the reasons and the most AI-like sentences",
+    "ask": "ask Claude (the words after it), print the answer",
+    "write": "ask Claude, then humanise, fix and type the answer: the whole workflow in one go",
+}
+
+
+def parse(argv):
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="human_typer_cli.py", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Human Typer in the terminal. With no command it opens the menus.",
+        epilog="commands:\n" + "\n".join(f"  {k:<10} {v}" for k, v in COMMANDS.items()) +
+        "\n\nexamples:\n  human_typer_cli.py type notes.txt --wpm 70 --style Messy\n"
+        "  human_typer_cli.py ask \"a short email asking for Friday off\" | human_typer_cli.py fix -\n"
+        "  human_typer_cli.py write \"a thank-you note for my son's teacher\" --audience 2")
+    ap.add_argument("command", nargs="?", choices=list(COMMANDS), metavar="command")
+    ap.add_argument("what", nargs="*", help="a file, - for what's piped in, or (for ask/write) your request")
+    ap.add_argument("--wpm", type=int, help="typing speed, words per minute")
+    ap.add_argument("--random", metavar="LO-HI", help="a speed that wanders between two, e.g. 40-90")
+    ap.add_argument("--style", choices=list(STYLES), type=str.title, help="how human the typing looks")
+    ap.add_argument("--typos", type=float, help="typos it makes and fixes, %% (0-8)")
+    ap.add_argument("--delay", type=int, help="seconds to click into your document first")
+    ap.add_argument("--background", action="store_true", help="type into Word in the background")
+    ap.add_argument("--level", type=int, choices=range(1, 6), metavar="1-5", help="how much check/fix covers")
+    ap.add_argument("--audience", type=int, choices=range(1, 6), metavar="1-5",
+                    help="1 Year 8, 2 General, 3 Team, 4 Executive, 5 Finance")
+    ap.add_argument("--format", choices=["original", "notes", "slides", "speaker"], help="shape of a rewrite")
+    ap.add_argument("--no-humanise", action="store_true", help="write: skip humanising")
+    ap.add_argument("--yes", "-y", action="store_true", help="write: type without asking first")
+    ap.add_argument("--no-color", action="store_true", help="plain text, no colours")
+    return ap.parse_args(argv)
+
+
+def quick(app, args):
+    """Run one command with no menus. Returns the exit code."""
+    ht, s = app.ht, app.s
+    if args.wpm:
+        s["wpm"] = max(1, min(2000, args.wpm))
+    if args.random:
+        m = re.match(r"\s*(\d+)\s*[-–]\s*(\d+)", args.random)
+        s["random"] = sorted([int(m.group(1)), int(m.group(2))]) if m else None
+    if args.style:
+        s["variation"], s["typos"] = STYLES[args.style]
+    if args.typos is not None:
+        s["typos"] = max(0.0, min(8.0, args.typos))
+    if args.delay:
+        s["delay"] = args.delay
+    if args.background:
+        s["background"] = True
+    if args.level:
+        s["check_level"] = args.level
+    if args.audience:
+        app.audience = ht.AUDIENCES[args.audience - 1]
+    if args.format:
+        app.format = {"original": ht.FORMATS[0], "notes": ht.FORMATS[1], "slides": ht.FORMATS[2],
+                      "speaker": ht.FORMATS[3]}[args.format]
+
+    def source():
+        what = " ".join(args.what)
+        if not what or what == "-":
+            return sys.stdin.read().strip("\n")
+        path = os.path.expanduser(what)
+        if os.path.isfile(path):
+            if path.lower().endswith(".docx"):
+                import docx
+                return "\n\n".join(p.text for p in docx.Document(path).paragraphs if p.text.strip())
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read().strip("\n")
+        return what                                  # the words themselves
+
+    def fail(msg):
+        sys.stderr.write("human typer: " + msg + "\n")
+        return 1
+
+    cmd = args.command
+    if cmd in ("ask", "write"):
+        request = " ".join(args.what) if args.what and args.what != ["-"] else sys.stdin.read().strip()
+        if not request:
+            return fail("say what Claude should write, e.g.  ask \"a short email asking for Friday off\"")
+        problem = app.ai_problem()
+        if problem:
+            return fail(problem)
+        loud = cmd == "write"
+        pieces = []
+
+        def piece(t):
+            pieces.append(t)
+            if loud:
+                app.say(t, end="")
+        r = app.ai(ht.CHAT_PROMPT, [{"role": "user", "content": request}], piece)
+        if "error" in r:
+            return fail(r["error"])
+        text = ("".join(pieces) or r.get("text") or "").strip()
+        if cmd == "ask":
+            print(text)
+            return 0
+        app.say("\n")
+        app.chat = [{"role": "user", "content": request}, {"role": "assistant", "content": text}]
+        app.s["wf_humanise"] = not args.no_humanise
+        app.s["wf_fix"] = True
+        if args.yes:
+            app.yes = lambda *a, **k: True
+        app.workflow()
+        return 0
+
+    text = source()
+    if not text.strip():
+        return fail(f"there's no text to {cmd}. Give a file, or pipe text in with -")
+    if cmd == "type":
+        app.text = text
+        return 0 if app.type_text(text) else 1
+    if cmd == "fix":
+        print(app.fix(text)[0])
+        return 0
+    if cmd == "check":
+        app.text = text
+        app.yes = lambda *a, **k: False
+        app.check()
+        return 0
+    if cmd == "humanise":
+        new = app.humanise(text) if sys.stdout.isatty() else None
+        if not sys.stdout.isatty():                  # piped: print only the result
+            problem = app.ai_problem()
+            if problem:
+                return fail(problem)
+            r = app.ai(ht.HUMANISER_PROMPT, [{"role": "user", "content": ht.humaniser_request(
+                text, app.audience, app.format)}], lambda t: None)
+            if "error" in r:
+                return fail(r["error"])
+            new = (r.get("text") or "").strip()
+            print(new)
+        return 0 if new else 1
+    if cmd == "ai-check":
+        app.text = text
+        app.ai_check()
+        return 0
+    return 2
+
+
+def main(ht=None, argv=None):
     if ht is None:
         import human_typer as ht
+    argv = sys.argv[1:] if argv is None else argv
+    argv = [a for a in argv if a != "--cli"]
     if sys.platform == "win32":
         os.system("")                     # lets Windows terminals show colours
     for stream in (sys.stdout, sys.stderr):
@@ -1237,8 +1494,17 @@ def main(ht=None):
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    args = parse(argv)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    app = CLI(ht, colour=False if args.no_color else None, keys=getkey if interactive else None)
+    if args.command:
+        app.pause = lambda: None          # no "press a key" stops in one-line commands
+        try:
+            sys.exit(quick(app, args))
+        except KeyboardInterrupt:
+            sys.exit(130)
     try:
-        CLI(ht).run()
+        app.run()
     except (KeyboardInterrupt, EOFError):
         print()
 
