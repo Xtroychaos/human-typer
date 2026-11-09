@@ -63,10 +63,17 @@ jobs:
             --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
             --hidden-import win32com.client --hidden-import pythoncom --collect-data docx --collect-data spellchecker --collect-data certifi --collect-submodules mcp.server --collect-submodules mcp.shared --hidden-import anyio._backends._asyncio \
             human_typer.py
+          # The terminal version: a console app, so it runs in Command Prompt / PowerShell.
+          python -m PyInstaller --noconfirm --onefile --console \
+            --name "Human Typer CLI" --icon icon.png \
+            --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 \
+            --hidden-import win32com.client --hidden-import pythoncom --collect-data docx --collect-data spellchecker --collect-data certifi \
+            human_typer_cli.py
           mkdir out
           cp "dist/Human Typer.exe" "out/HumanTyper-Windows.exe"
-          # The same app in a zip, with instructions, for apps that won't send .exe files.
-          python -c "import zipfile; z = zipfile.ZipFile('out/HumanTyper-Windows.zip', 'w', zipfile.ZIP_DEFLATED); z.write('dist/Human Typer.exe', 'Human Typer/Human Typer.exe'); z.write('packaging/READ ME FIRST.txt', 'Human Typer/READ ME FIRST.txt'); z.close()"
+          cp "dist/Human Typer CLI.exe" "out/HumanTyper-CLI-Windows.exe"
+          # The same apps in a zip, with instructions, for apps that won't send .exe files.
+          python -c "import zipfile; z = zipfile.ZipFile('out/HumanTyper-Windows.zip', 'w', zipfile.ZIP_DEFLATED); z.write('dist/Human Typer.exe', 'Human Typer/Human Typer.exe'); z.write('dist/Human Typer CLI.exe', 'Human Typer/Human Typer CLI.exe'); z.write('packaging/READ ME FIRST.txt', 'Human Typer/READ ME FIRST.txt'); z.close()"
 
       - name: Build (Mac)
         if: runner.os == 'macOS'
@@ -99,6 +106,13 @@ jobs:
           sleep 15
           if kill -0 $PID 2>/dev/null; then echo "App is running"; kill $PID || true; else wait $PID; echo "App quit early (code $?)"; exit 1; fi
 
+      - name: Quick check that the terminal version starts
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then CLI="dist/Human Typer CLI.exe"; ARG=""; else CLI="dist/Human Typer.app/Contents/MacOS/Human Typer"; ARG="--cli"; fi
+          printf '?\n\nq\n' | "$CLI" $ARG > cli.txt
+          cat cli.txt
+          grep -q "How it works" cli.txt && grep -q "Bye" cli.txt && echo "terminal version ok"
+
       - uses: actions/upload-artifact@v4
         with:
           name: HumanTyper-${{ matrix.label }}
@@ -126,6 +140,7 @@ jobs:
           - **Mac with an M1/M2/M3/M4 chip** (most Macs from 2021 on): HumanTyper-Mac-AppleSilicon.zip
           - **Older Mac with an Intel chip**: HumanTyper-Mac-Intel.zip
           - **Windows**: HumanTyper-Windows.exe (or HumanTyper-Windows.zip to send to someone: extract it, then open Human Typer.exe)
+          - **Terminal version**: Windows: HumanTyper-CLI-Windows.exe (double-click it, or run it from Command Prompt or PowerShell). Mac: in Terminal run  \"/Applications/Human Typer.app/Contents/MacOS/Human Typer\" --cli
 
           Not sure which Mac you have? Apple menu > About This Mac: it says Chip (Apple M...) or Processor (Intel).
 

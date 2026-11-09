@@ -21,3 +21,6 @@ then click into your Word document before the countdown ends.
 To have Claude write it for you: on the Write tab, press "Connect Claude..."
 and follow the two steps, then chat and press "Use this".
 To stop: push the mouse into the top-left corner of the screen, or press Esc.
+
+Prefer a terminal? "Human Typer CLI.exe" is the same app as menus in a
+Command Prompt window: double-click it, type the letter in [ ] and press Enter.

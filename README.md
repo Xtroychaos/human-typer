@@ -332,6 +332,43 @@ rewrites text for an audience and format using the Humaniser instructions.
 Keep Human Typer in your **Applications** folder (Mac) so the Claude app can always find it. If you move it, connect
 again. To remove it: **Connect Claude… → Disconnect**.
 
+## Terminal version
+
+Prefer the keyboard? Human Typer also runs in a terminal, with everything the window has: chat with Claude, Polish
+(humanise, check, AI check, APA), Type, Boxes, settings and Connect Claude.
+
+![The terminal version](screenshot-cli.png)
+
+- **Windows:** download `HumanTyper-CLI-Windows.exe` from the Releases page and double-click it (or run it from
+  Command Prompt or PowerShell). It's also in `HumanTyper-Windows.zip`.
+- **Mac:** with Human Typer in Applications, open **Terminal** and run:
+
+  ```bash
+  "/Applications/Human Typer.app/Contents/MacOS/Human Typer" --cli
+  ```
+
+- **From the code:** `python human_typer_cli.py` (or `python human_typer.py --cli`).
+
+How to use it:
+
+- Each screen has a short menu: type the letter or number in `[ ]` and press **Enter**.
+- The text you're working on carries from step to step, like the tabs: **1 Write → 2 Polish → 3 Type**.
+- **Write:** type a message and press Enter. `/use` sends Claude's last answer on (humanised and checked, if those
+  are switched on in Settings) and offers to type it. `/paste` sends a long message over several lines, `/copy`
+  copies the answer, `/new` starts a new chat and `/back` goes back to the menu.
+- **Pasting text:** paste it (or type it), then type a line with just a full stop ( `.` ) and press Enter.
+  **Text → From clipboard** and **Open a file** (.txt or .docx) work too.
+- **Type** shows a countdown, then a progress bar that fills as it types:
+
+  ![Typing in the terminal](screenshot-cli-type.png)
+
+- **Stop:** **Ctrl+C** stops anything (a reply, a rewrite, typing) and goes back a step. The mouse-corner stop works
+  too, and on Windows **Esc** stops and **F8** pauses.
+- **Boxes:** **Spots** asks you to point the mouse at each box's place and press Enter, which is simpler than in the
+  window. **Word cells:** drag your .docx into the terminal window to give its path.
+- Settings are saved, so they're the same next time. The terminal and the window share the Claude connection.
+- Set `NO_COLOR=1` for plain text with no colours.
+
 ## Simple view
 
 **Simple view** (in the Themes / 🎨 menu) hides everything except the Type tab's text box, the speed and
