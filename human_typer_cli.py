@@ -163,6 +163,44 @@ BOX_MODE_NAMES = {"click": "I click into each box", "spot": "auto-click my spots
                   "tab": "Tab through a Word table", "word": "Word cells from a .docx"}
 
 
+class Flow:
+    """Prints text that arrives a piece at a time (Claude writing), wrapped at the
+    screen width with every line indented, so it never runs off the edge."""
+
+    def __init__(self, write, width, indent="  ", col=0):
+        self.write, self.width, self.indent = write, width, indent
+        self.col = col or len(indent)
+        self.word = ""
+
+    def feed(self, text):
+        for ch in text:
+            if ch == "\n":
+                self._flush()
+                self.write("\n" + self.indent)
+                self.col = len(self.indent)
+            elif ch == " ":
+                self._flush()
+                if self.col < self.width:
+                    self.write(" ")
+                    self.col += 1
+            else:
+                self.word += ch
+
+    def _flush(self):
+        if not self.word:
+            return
+        if self.col + len(self.word) > self.width and self.col > len(self.indent):
+            self.write("\n" + self.indent)
+            self.col = len(self.indent)
+        self.write(self.word)
+        self.col += len(self.word)
+        self.word = ""
+
+    def end(self):
+        self._flush()
+        self.write("\n")
+
+
 class CLI:
     """The terminal app. Every screen is the same workspace, top to bottom:
 
@@ -203,6 +241,7 @@ class CLI:
         self.session = None            # Claude account: the conversation to carry on
         self.msg = []                  # the result area: what the last action did
         self.where = "home"
+        self._in_chat = False          # Write: the workspace is on screen, and the chat scrolls under it
 
     # ================================================================== #
     #  Drawing
@@ -210,6 +249,11 @@ class CLI:
     @property
     def width(self):
         return max(56, min(96, shutil.get_terminal_size((80, 24)).columns - 2))
+
+    @property
+    def room(self):
+        """How many lines of text fit in a panel: the screen's height minus the rest of the workspace."""
+        return max(6, shutil.get_terminal_size((80, 24)).lines - 18)
 
     def say(self, text="", end="\n"):
         self.out.write(text + end)
@@ -415,15 +459,17 @@ class CLI:
             del self.undo[:-20]
         self.text = text
 
-    def text_lines(self, text=None, limit=8):
+    def text_lines(self, text=None, limit=None):
         text = self.text if text is None else text
+        limit = limit or self.room
         if not text.strip():
             return [self.p("No text yet.", "grey")]
         lines = []
         for para in text.split("\n"):
             lines += textwrap.wrap(para, self.width - 8) or [""]
         if len(lines) > limit:
-            lines = lines[:limit - 1] + [self.p(f"… {len(lines) - limit + 1} more lines  (t on Home shows it all)", "grey")]
+            lines = lines[:limit - 1] + [self.p(f"… {len(lines) - limit + 1} more lines  (t on Home shows it all, "
+                                                "or make the window taller)", "grey")]
         return lines
 
     def text_title(self):
@@ -508,14 +554,17 @@ class CLI:
         if problem:
             self.tell(problem, "red")
             return None
-        if show:
-            self.note(f"Humanising for {self.audience[2:]}, as {self.format}… (Ctrl+C stops)", "accent")
-            self.say("  ", end="")
-        r = self.ai(self.ht.HUMANISER_PROMPT,
-                    [{"role": "user", "content": self.ht.humaniser_request(text, self.audience, self.format)}],
-                    (lambda piece: self.say(piece.replace("\n", "\n  "), end="")) if show else (lambda piece: None))
+        flow = None
         if show:
             self.say("")
+            self.note(f"Humanising for {self.audience[2:]}, as {self.format}… (Ctrl+C stops)", "accent")
+            self.say("  ", end="")
+            flow = Flow(lambda t: self.say(t, end=""), self.width)
+        r = self.ai(self.ht.HUMANISER_PROMPT,
+                    [{"role": "user", "content": self.ht.humaniser_request(text, self.audience, self.format)}],
+                    flow.feed if flow else (lambda piece: None))
+        if flow:
+            flow.end()
         if r.get("stopped"):
             self.tell("Stopped. The text wasn't changed.", "yellow")
             return None
@@ -553,7 +602,10 @@ class CLI:
                    "boxes": self.boxes_screen, "settings": self.settings, "connect": self.connect, "help": self.help}
         while self.where != "quit":
             try:
-                self.where = screens[self.where]() or self.where
+                nxt = screens[self.where]() or self.where
+                if nxt != "write":
+                    self._in_chat = False
+                self.where = nxt
             except KeyboardInterrupt:
                 self.say("")
                 self.tell("Stopped.", "yellow")
@@ -563,7 +615,7 @@ class CLI:
     # ----- Home: the text, and ways to bring it in or take it out -----
     def home(self):
         nothing = not self.text.strip()
-        k = self.screen("home", self.text_lines(limit=10), self.text_title(), [
+        k = self.screen("home", self.text_lines(), self.text_title(), [
             ("e", "Paste / type"), ("v", "From clipboard"), ("o", "Open a file"),
             ("t", "See it all"), ("c", "Copy"), ("x", "Clear"),
             ("enter", "Write with Claude" if nothing else "Type it")],
@@ -614,13 +666,14 @@ class CLI:
         self.tell(f"Opened {os.path.basename(path)}: {len(text.split())} words.", "green")
 
     # ----- 1 Write: the chat -----
-    def chat_lines(self, limit=12):
+    def chat_lines(self, limit=None):
         if not self.chat:
             return [self.p("Ask Claude to write something, for example:", "grey"),
                     self.p("  “Write a short email asking my boss for Friday off”", "grey"),
                     self.p("  “Help my son answer: why do leaves change colour? Year 5 level”", "grey"),
                     "",
                     self.p("Then /use: it's humanised, checked and ready to type.", "grey")]
+        limit = limit or max(8, self.room + 4)
         lines = []
         for m in self.chat:
             who = self.p("you › ", "accent", "bold") if m["role"] == "user" else self.p("claude › ", "bold")
@@ -633,8 +686,61 @@ class CLI:
         return lines[-limit:]
 
     def write(self):
+        if not self._in_chat:
+            self.draw_write()
+        problem = self.ai_problem()
+        if problem:
+            k = self.choose({"enter"})
+            self._in_chat = False
+            return "connect" if k == "enter" else k
+        try:
+            msg = self.read(self.p("  you › ", "accent", "bold")).strip()
+        except EOFError:
+            return "quit"
+        if not msg:
+            return "home"
+        cmd = msg.lower().strip()
+        # A screen's key on its own (or /key, or Esc) jumps there, as on every other screen.
+        if "\x1b" in cmd:
+            return "home"
+        if re.fullmatch(r"/?[1-6?q]", cmd):
+            return GLOBAL[cmd[-1]]
+        if cmd in ("/back", "/b", "/menu", "/home"):
+            return "home"
+        if cmd in ("/ai", "/model"):
+            return "connect"
+        if cmd == "/new":
+            self.chat, self.session = [], None
+            self._in_chat = False
+            self.tell("New chat.", "green")
+            return None
+        if cmd == "/copy":
+            ans = self.last_answer()
+            self.note("Copied." if ans and clipboard_set(ans) else "Nothing copied (no answer, or no clipboard).",
+                      "green" if ans else "yellow")
+            return None
+        if cmd == "/use":
+            ans = self.last_answer()
+            if not ans:
+                self.note("Ask Claude to write something first.", "yellow")
+                return None
+            if self.workflow(ans):
+                return "type"
+            self.flush_msg()                      # say why it stopped, right here in the chat
+            return None
+        if cmd.startswith("/") and cmd != "/paste":
+            self.note(f"There's no {cmd.split()[0]} command. Try /use, /paste, /ai, /copy or /new.", "yellow")
+            return None
+        if cmd == "/paste":
+            msg = self.read_block("Type or paste your message")
+            if not msg.strip():
+                return None
+        self.send(msg)
+        return None
+
+    def draw_write(self):
         self.header("write")
-        self.panel(self.chat_lines(), f"CHAT · {self.ai_status_short()}", 12)
+        self.panel(self.chat_lines(), f"CHAT · {self.ai_status_short()}", 4)
         wf = []
         if self.s["wf_humanise"]:
             wf.append("humanise")
@@ -648,71 +754,41 @@ class CLI:
         problem = self.ai_problem()
         if problem:
             self.tell(problem, "red")
+            self.tell("Press Enter to set it up now (6 AI), or 1-5 to go somewhere else.", "accent")
         self.footer()
-        if problem:
-            k = self.choose({"enter"})
-            return "connect" if k == "enter" else k
-        try:
-            msg = self.read(self.p("  you › ", "accent", "bold")).strip()
-        except EOFError:
-            return "quit"
-        if not msg:
-            return "home"
-        cmd = msg.lower()
-        if re.fullmatch(r"/[1-6?]", cmd):
-            return GLOBAL[cmd[1]]
-        if cmd in ("/back", "/b", "/menu", "/home"):
-            return "home"
-        if cmd in ("/ai", "/model"):
-            return "connect"
-        if cmd == "/new":
-            self.chat, self.session = [], None
-            self.tell("New chat.", "green")
-            return None
-        if cmd == "/copy":
-            ans = self.last_answer()
-            self.tell("Copied." if ans and clipboard_set(ans) else "Nothing copied (no answer, or no clipboard).",
-                      "green" if ans else "yellow")
-            return None
-        if cmd == "/use":
-            ans = self.last_answer()
-            if not ans:
-                self.tell("Ask Claude to write something first.", "yellow")
-                return None
-            return "type" if self.workflow(ans) else None
-        if cmd == "/paste":
-            msg = self.read_block("Type or paste your message")
-            if not msg.strip():
-                return None
-        self.send(msg)
-        return None
+        self._in_chat = True
 
     def send(self, msg):
         self.chat.append({"role": "user", "content": msg})
         self.say("")
         self.say("  " + self.p("claude › ", "bold"), end="")
         got = []
+        flow = Flow(lambda t: self.say(t, end=""), self.width, indent="           ", col=11)
 
         def piece(t):
             got.append(t)
-            self.say(t.replace("\n", "\n  "), end="")
+            flow.feed(t)
         r = self.ai(self.ht.CHAT_PROMPT, list(self.chat), piece, session=self.session, keep=True)
         if r.get("session"):
             self.session = r["session"]
         reply = "".join(got)
         if not r.get("stopped") and "error" not in r and not reply.strip() and r.get("text"):
             reply = r["text"]
+            flow.feed(reply)
+        flow.end()
         self.say("")
         if "error" in r and not r.get("stopped"):
             self.chat.pop()
-            self.tell(r["error"], "red")
+            self.note(r["error"], "red")
             return
         if reply.strip():
             self.chat.append({"role": "assistant", "content": reply})
             if r.get("stopped"):
-                self.tell("Stopped.", "yellow")
+                self.note("Stopped. /use still works on what it wrote so far.", "yellow")
         else:
             self.chat.pop()
+            if r.get("stopped"):
+                self.note("Stopped.", "yellow")
 
     def last_answer(self):
         for m in reversed(self.chat):
