@@ -157,7 +157,7 @@ def clipboard_set(text):
 GLOBAL = {"1": "write", "2": "polish", "3": "type", "4": "boxes", "5": "settings", "6": "connect", "?": "help",
           "q": "quit", "esc": "home"}
 TABS = [("1", "Write", "write"), ("2", "Polish", "polish"), ("3", "Type", "type"), ("4", "Boxes", "boxes"),
-        None, ("5", "Settings", "settings"), ("6", "Connect", "connect"), ("?", "Help", "help")]
+        None, ("5", "Settings", "settings"), ("6", "AI", "connect"), ("?", "Help", "help")]
 BOX_MODES = ["click", "spot", "tab", "word"]
 BOX_MODE_NAMES = {"click": "I click into each box", "spot": "auto-click my spots",
                   "tab": "Tab through a Word table", "word": "Word cells from a .docx"}
@@ -167,7 +167,7 @@ class CLI:
     """The terminal app. Every screen is the same workspace, top to bottom:
 
         title bar  (and what's set: Claude, speed, style)
-        tab bar    1 Write  2 Polish  3 Type  4 Boxes | 5 Settings  6 Connect  ? Help
+        tab bar    1 Write  2 Polish  3 Type  4 Boxes | 5 Settings  6 AI  ? Help
         panel      the text you're working on (or the chat, the boxes, the settings)
         actions    what this screen can do, one key each, in a grid
         result     what the last action did (stays until the next one)
@@ -191,6 +191,7 @@ class CLI:
         engine = cfg.get("engine", "account")
         self.engine = engine if engine in ("account", "claude", "local") else "account"
         self.model = cfg.get("ollama_model", "")
+        self.claude_model = cfg.get("claude_model", "")   # opus / sonnet / haiku / fable, or "" = the default
         self.audience = cfg.get("audience", ht.AUDIENCES[2])
         self.format = cfg.get("format", ht.FORMATS[0])
         self.text = ""
@@ -392,7 +393,8 @@ class CLI:
     def save(self):
         cfg = self.ht.load_config()
         cfg["cli"] = self.s
-        cfg.update(engine=self.engine, ollama_model=self.model, audience=self.audience, format=self.format)
+        cfg.update(engine=self.engine, ollama_model=self.model, audience=self.audience, format=self.format,
+                   claude_model=self.claude_model)
         self.ht.save_config(cfg)
 
     def style_name(self):
@@ -434,42 +436,60 @@ class CLI:
     # ================================================================== #
     #  The AI
     # ================================================================== #
+    def ai_name(self):
+        """What it's using, in words: e.g. "Claude Sonnet" or "Local AI (llama3.2)"."""
+        if self.engine == "local":
+            return f"Local AI ({self.model or 'no model'})"
+        name = "Claude " + self.claude_model.title() if self.claude_model else "Claude"
+        if self.engine == "claude":
+            return name + (" · API key" if self.claude_model else " Opus · API key")
+        return name
+
     def ai_status_short(self):
         if self.engine == "account":
-            return "Claude ✓" if self.ht.find_claude_cli() else "Claude: not connected"
+            return self.ai_name() + (" ✓" if self.ht.find_claude_cli() else ": not connected")
         if self.engine == "claude":
-            return "Claude (API key ✓)" if self.key() else "Claude (API key): none"
-        return f"local AI ({self.model or 'no model'})"
+            return self.ai_name() + (" ✓" if self.key() else ": no key")
+        return self.ai_name()
 
     def key(self):
         return self.ht.load_config().get("claude_api_key") or os.environ.get("ANTHROPIC_API_KEY", "")
 
     def ai_problem(self):
         if self.engine == "account" and not self.ht.find_claude_cli():
-            return self.ht.CLAUDE_SETUP_HELP.replace("Connect Claude…", "6 Connect")
+            return self.ht.CLAUDE_SETUP_HELP.replace("Connect Claude…", "6 AI")
         if self.engine == "claude" and not self.key():
-            return "Add your Claude API key first: 6 Connect → k."
+            return "Add your Claude API key first: 6 AI → k."
         if self.engine == "local" and not self.model:
-            return "Pick a local AI model first: 6 Connect → m."
+            return "Pick a local AI model first: 6 AI → l."
         return None
+
+    @staticmethod
+    def cli_words(text):
+        """Messages from the shared engine name the window's buttons: say the terminal's keys instead."""
+        for a, b in (("Connect Claude… → ② Log in", "6 AI → n (log in)"),
+                     ("Connect Claude… → ① Install", "6 AI → i (install)"),
+                     ("Connect Claude…", "6 AI")):
+            text = text.replace(a, b)
+        return text
 
     def ai(self, system, messages, on_text, session=None, keep=False):
         """Ask the chosen AI. Ctrl+C stops it. Returns {"text", "session"} or {"error"} (+ "stopped")."""
         ht, stop, result = self.ht, threading.Event(), {}
-        engine, key, model = self.engine, self.key(), self.model
+        engine, key, model, claude_model = self.engine, self.key(), self.model, self.claude_model or None
 
         def work():
             try:
                 if engine == "account":
                     text, sid = ht.claude_account_stream(messages[-1]["content"], system, on_text, stop,
-                                                         session=session, keep=keep)
+                                                         session=session, keep=keep, model=claude_model)
                     result.update(text=text, session=sid)
                 elif engine == "claude":
-                    result["text"] = ht.claude_api_stream(system, messages, key, on_text, stop)
+                    result["text"] = ht.claude_api_stream(system, messages, key, on_text, stop, model=claude_model)
                 else:
                     result["text"] = ht.ollama_stream(system, messages, model, on_text, stop)
             except Exception as exc:
-                result["error"] = str(exc).replace("\n\n", " ").replace("\n", " ")
+                result["error"] = self.cli_words(str(exc).replace("\n\n", " ").replace("\n", " "))
 
         thread = threading.Thread(target=work, daemon=True)
         thread.start()
@@ -623,7 +643,8 @@ class CLI:
         self.rule("WRITE", "type a message and press Enter · empty line = back")
         self.say("  " + self.p("/use", "accent", "bold") + self.p(f" → {' + '.join(wf + ['type'])}   ", "grey") +
                  self.p("/paste", "accent", "bold") + self.p(" long message   ", "grey") +
-                 self.p("/copy  /new  /1-6", "accent", "bold") + self.p(" jump", "grey"))
+                 self.p("/ai", "accent", "bold") + self.p(" change AI   ", "grey") +
+                 self.p("/copy  /new", "accent", "bold"))
         problem = self.ai_problem()
         if problem:
             self.tell(problem, "red")
@@ -642,6 +663,8 @@ class CLI:
             return GLOBAL[cmd[1]]
         if cmd in ("/back", "/b", "/menu", "/home"):
             return "home"
+        if cmd in ("/ai", "/model"):
+            return "connect"
         if cmd == "/new":
             self.chat, self.session = [], None
             self.tell("New chat.", "green")
@@ -1236,7 +1259,7 @@ class CLI:
         self.save()
         return None
 
-    # ----- 6 Connect -----
+    # ----- 6 AI: which AI, and which model -----
     def connect(self):
         ht = self.ht
         if self._account is None:
@@ -1247,27 +1270,49 @@ class CLI:
                 linked = "human-typer" in (json.load(fh).get("mcpServers") or {})
         except Exception:
             linked = False
-        use = lambda e: self.p("● ", "accent") if self.engine == e else self.p("○ ", "grey")
-        lines = [
-            use("account") + self.p("My Claude account", "bold") + self.p("   recommended · your Pro/Max plan", "grey"),
-            "    " + self.p(acct["text"], "green" if acct.get("logged_in") else "yellow"),
-            use("claude") + self.p("A Claude API key", "bold") + self.p("    pay per use · ", "grey") +
-            (self.p("key saved ✓", "green") if self.key() else self.p("no key yet", "grey")),
-            use("local") + self.p("A local AI", "bold") + self.p(f"          free, offline · model: {self.model or 'none'}",
-                                                                 "grey"),
-            "",
-            self.p("Claude app", "bold") + self.p("          types from the Claude desktop app · ", "grey") +
-            (self.p("connected ✓", "green") if linked else self.p("not connected", "grey")),
-        ]
-        k = self.screen("connect", lines, "CONNECT CLAUDE", [
-            ("a", "Use my account"), ("i", "Install Claude Code"), ("l", "Log in"),
-            ("k", "Use an API key"), ("m", "Use a local AI"), ("r", "Check again"),
-            ("c", "Connect Claude app"), ("d", "Disconnect it")], "connect", "● = the one in use", height=6)
+        dot = lambda on: self.p("● ", "accent") if on else self.p("○ ", "grey")
+        claude = self.engine in ("account", "claude")
+        lines = [self.p("Using: ", "grey") + self.p(self.ai_name(), "accent", "bold"), "",
+                 self.p("HOW", "grey", "bold"),
+                 dot(self.engine == "account") + "Your Claude account   " +
+                 self.p(acct["text"].replace("① Install (about a minute), then ② Log in",
+                                             "i to install (about a minute), then n to log in")
+                        .replace("Press ② Log in", "Press n to log in")
+                        .replace("press ② Log in", "press n to log in"),
+                        "green" if acct.get("logged_in") else "yellow"),
+                 dot(self.engine == "claude") + "A Claude API key      " +
+                 (self.p("key saved ✓", "green") if self.key() else self.p("no key yet", "grey")) +
+                 self.p(" · pay per use", "grey"),
+                 dot(self.engine == "local") + "A local AI (Ollama)   " +
+                 self.p(f"free, offline · model: {self.model or 'none yet'}", "grey"),
+                 "", self.p("CLAUDE MODEL", "grey", "bold") + ("" if claude else self.p("  (for Claude)", "grey"))]
+        current = self.claude_model or ("" if self.engine == "account" else "opus")
+        if self.engine == "account":
+            lines.append(dot(current == "") + "Claude Code's default")
+        for short, (_, about) in ht.CLAUDE_MODELS.items():
+            lines.append(dot(claude and current == short) + about)
+        lines += ["", self.p("Claude app  ", "grey") + (self.p("connected ✓", "green") if linked else
+                                                       self.p("not connected", "grey")) +
+                  self.p("  (it can type for you)", "grey")]
+        items = [("a", "Your account"), ("k", "API key"), ("l", "Local AI"),
+                 ("o", "Opus"), ("s", "Sonnet"), ("h", "Haiku"),
+                 ("f", "Fable"), ("e", "Default model"), ("i", "Install Claude Code"),
+                 ("n", "Log in"), ("r", "Check again"), ("c", "Claude app on"), ("x", "Claude app off")]
+        k = self.screen("connect", lines, "AI · which one writes and humanises", items, "ai",
+                        "pick how, then which model", height=len(lines))
         if k in GLOBAL.values():
             self.save()
             return k
         if k == "a":
             self.engine, self.session = "account", None
+            self.tell(f"Using {self.ai_name()} (your account).", "green")
+        elif k in ("o", "s", "h", "f", "e"):
+            short = {"o": "opus", "s": "sonnet", "h": "haiku", "f": "fable", "e": ""}[k]
+            if self.engine == "local":
+                self.engine = "account"
+            self.claude_model, self.session = short, None
+            self.tell(f"Using {self.ai_name()}." + (" Fable uses your plan's limits fastest." if short == "fable"
+                                                   else ""), "green")
         elif k == "r":
             self._account = None
         elif k == "i":
@@ -1279,8 +1324,8 @@ class CLI:
                 subprocess.run(run)
                 self._account = None
                 self.engine = "account"
-                self.tell("Installed. Now press l to log in.", "accent")
-        elif k == "l":
+                self.tell("Installed. Now press n to log in.", "accent")
+        elif k == "n":
             exe = ht.find_claude_cli()
             if not exe:
                 self.tell("Install Claude Code first (i).", "yellow")
@@ -1301,7 +1346,8 @@ class CLI:
                 self.tell("Key saved (only on this computer)." if key else "Key removed.", "green")
             if self.key():
                 self.engine, self.session = "claude", None
-        elif k == "m":
+                self.tell(f"Using {self.ai_name()}.", "green")
+        elif k == "l":
             try:
                 models = ht.ollama_models()
             except Exception as exc:
@@ -1315,12 +1361,13 @@ class CLI:
                 if a.isdigit() and 1 <= int(a) <= len(models):
                     self.model = models[int(a) - 1]
                     self.engine, self.session = "local", None
-        elif k in ("c", "d"):
+                    self.tell(f"Using {self.ai_name()}.", "green")
+        elif k in ("c", "x"):
             try:
-                path = ht.connect_claude(remove=k == "d")
-                self.tell(("Disconnected." if k == "d" else "Connected!") + " Quit the Claude app completely and open "
-                          "it again." + ("" if k == "d" else " Then say: “type it with Human Typer at 60 "
-                                                             "WPM”."), "green")
+                path = ht.connect_claude(remove=k == "x")
+                self.tell(("Disconnected." if k == "x" else "Connected!") + " Quit the Claude app completely and open "
+                          "it again." + ("" if k == "x" else " Then say: \u201ctype it with Human Typer at 60 "
+                                                             "WPM\u201d."), "green")
                 self.tell(f"(Settings file: {path})")
             except Exception as exc:
                 self.tell(f"Couldn't update the Claude app's settings: {exc}", "red")
@@ -1335,7 +1382,8 @@ class CLI:
             ("3 Type", "Enter starts; click into your document during the countdown. + − speed, y style."),
             ("4 Boxes", "One paragraph per box: click each, auto-click spots, Tab through a table, Word cells."),
             ("5 Settings", "Speed, style, typos, countdown, background. Saved for next time."),
-            ("6 Connect", "Your Claude account (install + log in, about a minute), an API key, or a local AI."),
+            ("6 AI", "Pick the AI: your Claude account (install + log in, about a minute), an API key, or a "
+                     "local AI, and the model: Opus, Sonnet, Haiku or Fable. /ai in Write jumps here."),
             ("Keys", "1-6 jump anywhere · Esc home · q quit · Ctrl+C stops a reply, a rewrite or typing."),
             ("Stop typing", "Ctrl+C, or the mouse to the top-left corner of the screen" +
                             ("." if sys.platform == "darwin" else ", or Esc. F8 pauses.")),
@@ -1384,6 +1432,9 @@ def parse(argv):
     ap.add_argument("--audience", type=int, choices=range(1, 6), metavar="1-5",
                     help="1 Year 8, 2 General, 3 Team, 4 Executive, 5 Finance")
     ap.add_argument("--format", choices=["original", "notes", "slides", "speaker"], help="shape of a rewrite")
+    ap.add_argument("--ai", choices=["account", "key", "local"], help="which AI: your Claude account, an API key, "
+                    "or a local AI")
+    ap.add_argument("--model", help="opus, sonnet, haiku or fable (Claude), or a local model name like llama3.2")
     ap.add_argument("--no-humanise", action="store_true", help="write: skip humanising")
     ap.add_argument("--yes", "-y", action="store_true", help="write: type without asking first")
     ap.add_argument("--no-color", action="store_true", help="plain text, no colours")
@@ -1410,6 +1461,16 @@ def quick(app, args):
         s["check_level"] = args.level
     if args.audience:
         app.audience = ht.AUDIENCES[args.audience - 1]
+    if args.ai:
+        app.engine = {"account": "account", "key": "claude", "local": "local"}[args.ai]
+    if args.model:
+        m = args.model.lower()
+        if m in ht.CLAUDE_MODELS:
+            app.claude_model = m
+            if app.engine == "local":
+                app.engine = "account"
+        else:
+            app.model, app.engine = args.model, "local"
     if args.format:
         app.format = {"original": ht.FORMATS[0], "notes": ht.FORMATS[1], "slides": ht.FORMATS[2],
                       "speaker": ht.FORMATS[3]}[args.format]

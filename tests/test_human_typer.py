@@ -336,7 +336,7 @@ class Window(unittest.TestCase):
         app = self.app
         replies = iter(["Here is teh email you asked for.", "Hi Sam, could i have Friday off?"])
 
-        def fake(prompt, system, on_text, stop, session=None, keep=False):
+        def fake(prompt, system, on_text, stop, session=None, keep=False, **kw):
             text = next(replies)
             on_text(text)
             return text, "session-1"

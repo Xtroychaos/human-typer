@@ -111,7 +111,7 @@ class Menus(unittest.TestCase):
     def test_layout_and_quit(self):
         app, out = run_cli(["q"])
         for part in ("HUMAN TYPER", "1 Write", "2 Polish", "3 Type", "4 Boxes",
-                     "5 Settings", "6 Connect", "TEXT", "HOME", "1-6 jump", "Bye"):
+                     "5 Settings", "6 AI", "TEXT", "HOME", "1-6 jump", "Bye"):
             self.assertIn(part, out)
 
     def test_jump_anywhere_and_esc_home(self):
@@ -182,7 +182,7 @@ class Menus(unittest.TestCase):
         """Chat with (a pretend) Claude, then /use: humanise, fix, and it's on Type, ready."""
         replies = iter(["Here is teh email.", "Hi Sam, could i have Friday off?"])
 
-        def fake(prompt, system, on_text, stop, session=None, keep=False):
+        def fake(prompt, system, on_text, stop, session=None, keep=False, **kw):
             text = next(replies)
             on_text(text)
             return text, "s1"
@@ -207,14 +207,34 @@ class Menus(unittest.TestCase):
         finally:
             ht.find_claude_cli = old
         self.assertIn("isn't connected", out)
-        self.assertIn("CONNECT CLAUDE", out, "Enter went to Connect")
+        self.assertIn("AI · which one", out, "Enter went to the AI screen")
+
+    def test_pick_the_ai_and_model(self):
+        """6 AI: pick the model (one key), it's saved, used for Claude, and shown in the title bar."""
+        seen = {}
+
+        def fake(prompt, system, on_text, stop, session=None, keep=False, model=None):
+            seen["model"] = model
+            on_text("Hi.")
+            return "Hi.", "s1"
+        old = ht.claude_account_stream, ht.find_claude_cli
+        ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
+        try:
+            app, out = run_cli(["6", "a", "h", "1", "hello", "", "q"])
+        finally:
+            ht.claude_account_stream, ht.find_claude_cli = old
+        self.assertEqual(seen["model"], "haiku")
+        self.assertEqual(ht.load_config()["claude_model"], "haiku")
+        self.assertIn("Claude Haiku", out)
+        app, _ = run_cli(["6", "e", "q"])
+        self.assertEqual(ht.load_config()["claude_model"], "", "e goes back to the default model")
 
     def test_connect_api_key_and_claude_app(self):
         path = os.path.join(_HOME, "claude_desktop_config.json")
         old = ht.claude_config_path
         ht.claude_config_path = lambda: path
         try:
-            app, out = run_cli(["6", "k", "c", "q"], secret="sk-ant-test")
+            app, out = run_cli(["6", "k", "c", "q"], secret="sk-ant-test")     # k = API key, c = Claude app on
         finally:
             ht.claude_config_path = old
         self.assertEqual(ht.load_config()["claude_api_key"], "sk-ant-test")
@@ -281,7 +301,7 @@ class QuickCommands(unittest.TestCase):
         self.assertEqual((app.s["wpm"], app.s["variation"]), (90, 60))
 
     def test_ask_and_write(self):
-        def fake(prompt, system, on_text, stop, session=None, keep=False):
+        def fake(prompt, system, on_text, stop, session=None, keep=False, **kw):
             text = "Hi Sam, could i have Friday off?"
             on_text(text)
             return text, "s1"
@@ -294,6 +314,23 @@ class QuickCommands(unittest.TestCase):
             self.assertEqual("".join(FakeTypist.last.typed), "Hi Sam, could I have Friday off?")
         finally:
             ht.claude_account_stream, ht.find_claude_cli = old
+
+    def test_ai_and_model_options(self):
+        seen = {}
+
+        def fake(prompt, system, on_text, stop, session=None, keep=False, model=None):
+            seen["model"] = model
+            on_text("ok")
+            return "ok", "s1"
+        old = ht.claude_account_stream, ht.find_claude_cli
+        ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
+        try:
+            code, out, app = self.run_cmd(["ask", "hi", "--ai", "account", "--model", "sonnet"])
+        finally:
+            ht.claude_account_stream, ht.find_claude_cli = old
+        self.assertEqual((code, seen["model"], app.engine), (0, "sonnet", "account"))
+        _, _, app = self.run_cmd(["fix", self.file("x"), "--model", "llama3.2"])
+        self.assertEqual((app.engine, app.model), ("local", "llama3.2"))
 
     def test_nothing_to_do(self):
         code, _, _ = self.run_cmd(["fix", self.file("   ")])
