@@ -5659,6 +5659,10 @@ def main():
     if "--mcp" in sys.argv:               # started by the Claude app as a connector
         run_mcp()
         return
+    if "--cli" in sys.argv:               # the terminal version: menus instead of a window
+        import human_typer_cli
+        human_typer_cli.main(sys.modules[__name__])
+        return
     if "--selftest" in sys.argv:          # used by the build check: are all the parts inside the app?
         def say(msg):                     # a windowed Windows app has nowhere to print
             if sys.stdout is not None:
