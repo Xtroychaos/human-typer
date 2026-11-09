@@ -50,6 +50,11 @@ jobs:
           python -c "import human_typer as h; c = h.read_word_cells('t.docx'); assert len(c) == 4, c; print('word reader ok')"
           python -c "import human_typer as h; i = h.check_text('i went to teh shop and we was tired'); print([d['suggestion'] for d in i]); assert any(d['suggestion'] == 'the' for d in i); print('checker ok')"
 
+      - name: Run the tests
+        # Typing plans, the typist, the checker, settings, the Claude link. (The window
+        # tests need a screen, so they're run by hand: see tests/test_human_typer.py.)
+        run: python -m unittest discover -s tests -v
+
       - name: Build (Windows)
         if: runner.os == 'Windows'
         run: |

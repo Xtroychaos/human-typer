@@ -51,6 +51,40 @@ for r, row in enumerate(_ROWS):
         NEIGHBOURS[key] = "".join(sorted(k for k in near if k.isalpha())) or "".join(sorted(near))
 
 
+# Which finger types each key (touch typing): 0-3 = left pinky..index, 4-7 = right index..pinky.
+FINGER = {}
+for _keys, _f in (("`1qaz", 0), ("2wsx", 1), ("3edc", 2), ("45rtfgvb", 3),
+                  ("67yuhjnm", 4), ("8ik,", 5), ("9ol.", 6), ("0-=p[]\\;'/", 7)):
+    for _k in _keys:
+        FINGER[_k] = _f
+# Letter pairs people type so often their fingers do them as one quick roll.
+FAST_PAIRS = set("th he in er an re on at en nd ti es or te of ed is it al ar st to nt ng se ha as ou io le "
+                 "ve co me de hi ri ro ic ne ea ra ce li ch ll be ma si om ur".split())
+
+
+def key_gap(prev, ch):
+    """How long a key takes after the one before it, compared with average:
+    quick for common pairs and for keys on opposite hands, slow when the same
+    finger has to move to another key, and slower for digits and symbols."""
+    a, b = prev.lower(), ch.lower()
+    if not (a.isalpha() and b.isalpha()):
+        g = 1.0
+    elif a + b in FAST_PAIRS:
+        g = 0.78
+    elif a == b:
+        g = 0.75                                   # double letters are quick
+    elif a in FINGER and b in FINGER:
+        fa, fb = FINGER[a], FINGER[b]
+        g = 1.35 if fa == fb else 0.88 if (fa < 4) != (fb < 4) else 1.0
+    else:
+        g = 1.0
+    if ch.isdigit():
+        g *= 1.4                                   # reaching up to the number row
+    elif not ch.isalnum() and ch not in " \n\t.,'":
+        g *= 1.5                                   # symbols: find them, then reach
+    return g
+
+
 # --------------------------------------------------------------------------- #
 #  The plan: every key press, and how long to wait before it (as a weight)
 # --------------------------------------------------------------------------- #
@@ -1402,6 +1436,11 @@ def claude_account_stream(prompt, system, on_text, stop_event, session=None, kee
     finally:
         if p.poll() is None:
             p.kill()
+        for pipe in (p.stdout, p.stderr):
+            try:
+                pipe.close()
+            except Exception:
+                pass
         try:
             os.unlink(prompt_file)
         except OSError:
@@ -1738,6 +1777,18 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
     typo_words / typo_letters: words that always get a mistake, and letters that
     get one about letter_chance of the time. fix_chosen=False leaves those
     mistakes in (and then only uses mistakes that keep the word the same length).
+
+    To look like a real person (with variation above 0):
+      - finger timing: common pairs like "th" roll quickly, keys on opposite hands
+        are quick, the same finger moving to another key is slow, digits and
+        symbols take a reach;
+      - words come in bursts: each word gets its own pace, long words get a
+        small hesitation first, and the first few words are a little slower
+        (warming up);
+    and with typos switched on, the mistakes are the kinds people make: the key
+    next door, two letters swapped ("teh"), a doubled letter, a skipped letter,
+    sometimes only noticed a letter later, and now and then a word started,
+    rubbed out and started again.
     """
     rng = random.Random(seed)
     words = {w.lower() for w in typo_words}
@@ -1750,8 +1801,16 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
             return 1.0
         return rng.lognormvariate(0.0, variation)
 
+    burst = [1.0]      # this word's pace (people type in bursts, word by word)
+    typed = [0]        # characters typed so far, for warming up
+
     def weight(ch, prev):
         w = jitter()
+        if variation > 0:
+            w *= key_gap(prev, ch) * burst[0]
+            typed[0] += 1
+            if typed[0] < 40:
+                w *= 1.0 + 0.3 * (1 - typed[0] / 40)   # warming up
         if natural_pauses:
             if prev in ".!?":
                 w *= 4.5          # end of a sentence
@@ -1765,13 +1824,43 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
                     w *= 6.0      # now and then, stop to "think"
             if ch.isupper() or ch in '!@#$%^&*()_+{}|:"<>?~':
                 w *= 1.25         # reaching for Shift
-            if ch == prev and ch.isalpha():
+            if ch == prev and ch.isalpha() and variation <= 0:
                 w *= 0.75         # double letters are quick
         return w
+
+    def back(n, first=2.6):
+        """Notice a mistake (a pause), then rub out n characters."""
+        for k in range(n):
+            steps.append((BACKSPACE, (first if k == 0 else 0.6) * jitter()))
+
+    restarted = -1     # the word we already started again (only once each)
 
     i = 0
     while i < len(text):
         ch = text[i]
+        word_start = ch.isalpha() and (i == 0 or not text[i - 1].isalnum())
+
+        if word_start and variation > 0:
+            j = i
+            while j < len(text) and text[j].isalpha():
+                j += 1
+            burst[0] = rng.lognormvariate(0.0, 0.18 * min(1.0, variation / 0.35))
+            if j - i >= 8:
+                burst[0] *= 1.15                  # long words: a little slower
+            # Now and then: start a word, rub it out, start again (a change of mind).
+            if (typo_percent > 0 and natural_pauses and j - i >= 4 and restarted != i
+                    and text[i:j].lower() not in words and rng.random() < 0.004 * min(4.0, typo_percent)):
+                restarted = i
+                k = rng.randint(2, min(4, j - i - 1))
+                p = prev
+                for c in text[i:i + k]:
+                    steps.append((c, weight(c, p)))
+                    p = c
+                back(k, first=3.5)
+                steps.append((text[i], 2.5 * jitter()))    # a moment, then the word again
+                prev = text[i]
+                i += 1
+                continue
 
         # A word you chose: type it wrong (and maybe fix it).
         if words and ch.isalpha() and (i == 0 or not text[i - 1].isalnum()):
@@ -1803,6 +1892,36 @@ def build_plan(text, variation=0.35, typo_percent=1.5, natural_pauses=True, seed
         lower = ch.lower()
         chosen_letter = lower in letters and ch.isalpha() and rng.random() < letter_chance
         random_typo = typo_percent > 0 and rng.random() < typo_percent / 100
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        kind = "near"
+        if random_typo and not chosen_letter and ch.isalpha():
+            kind = rng.choices(["near", "swap", "double", "skip"], [50, 22, 14, 14])[0]
+            if kind in ("swap", "skip") and not (nxt.isalpha() and nxt.lower() != lower):
+                kind = "near"
+        if kind == "swap":                        # "teh": the next letter came first
+            steps.append((nxt, w))
+            steps.append((ch, 0.8 * jitter()))
+            back(2)
+            steps.append((ch, 1.2 * jitter()))
+            steps.append((nxt, weight(nxt, ch)))
+            prev = nxt
+            i += 2
+            continue
+        if kind == "skip":                        # "hllo": a letter missed out
+            steps.append((nxt, w))
+            back(1)
+            steps.append((ch, 1.2 * jitter()))
+            steps.append((nxt, weight(nxt, ch)))
+            prev = nxt
+            i += 2
+            continue
+        if kind == "double":                      # "helllo": one too many
+            steps.append((ch, w))
+            steps.append((ch, 0.7 * jitter()))
+            back(1, first=2.2)
+            prev = ch
+            i += 1
+            continue
         if lower in NEIGHBOURS and ch.isalpha() and (chosen_letter or random_typo):
             wrong = rng.choice(NEIGHBOURS[lower])
             if ch.isupper():
@@ -2452,7 +2571,7 @@ THEMES = {
                    accent2="#4ade80", accent_text="#ffffff", border="#dbe7dc", field="#ffffff",
                    hover="#e7f5e9", sel="#bbf7d0"),
 }
-TAB_NAMES = ["Write", "Polish", "Type"]
+TAB_NAMES = ["1  Write", "2  Polish", "3  Type"]
 TAB_WRITE, TAB_POLISH, TAB_TYPE = range(3)
 TOAST_STARTS = ("Finished", "Done", "Fixed", "Copied", "Connected", "Box done", "Claude key saved",
                 "Natural tone on", "Split into", "Added", "Ready to type")
@@ -2655,7 +2774,7 @@ class App:
 
         # --- Type: one block of text, or one paragraph per box ---
         typetab = self.type_tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(typetab, text="  Type  ")
+        self.tabs.add(typetab, text="  3  Type  ")
         self.type_mode = tk.StringVar(value="text")
         switch = ttk.Frame(typetab)
         switch.pack(fill="x", pady=(0, 6))
@@ -2701,7 +2820,7 @@ class App:
 
         mode = ttk.Frame(grid)
         mode.pack(fill="x", pady=(6, 4))
-        ttk.Label(mode, text="Getting to each box:").pack(side="left")
+        ttk.Label(mode, text="How to get to each box:").pack(side="left")
         ttk.Radiobutton(mode, text="I click", value="click",
                         variable=self.box_mode).pack(side="left", padx=(6, 2))
         ttk.Radiobutton(mode, text="Auto-click my spots", value="spot",
@@ -2745,22 +2864,31 @@ class App:
         # Human touches
         human = self.human_frame = ttk.LabelFrame(bottom, text="Make it look human")
         human.pack(fill="x", **pad)
-        ttk.Label(human, text="Rhythm variation").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        style = ttk.Frame(human)
+        style.grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 2))
+        ttk.Label(style, text="Style:").pack(side="left")
+        for label, rhythm, typos, tip in (("Careful", 20, 0.5, "steady, very few mistakes"),
+                                          ("Natural", 35, 1.5, "like most people"),
+                                          ("Messy", 60, 4.0, "uneven, lots of mistakes it fixes")):
+            ttk.Button(style, text=label, command=lambda r=rhythm, t=typos: (
+                self.variation.set(r), self.typos.set(t), self.pauses.set(True))).pack(side="left", padx=(6, 0))
+        ttk.Label(style, text="or set it yourself:", foreground="#777").pack(side="left", padx=8)
+        ttk.Label(human, text="How uneven the rhythm is").grid(row=1, column=0, sticky="w", padx=8, pady=4)
         ttk.Scale(human, from_=0, to=100, variable=self.variation, orient="horizontal",
-                  command=lambda v: self.variation.set(int(float(v)))).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Label(human, textvariable=self.variation, width=4).grid(row=0, column=2)
-        ttk.Label(human, text="Typos (fixed with backspace), % of letters").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+                  command=lambda v: self.variation.set(int(float(v)))).grid(row=1, column=1, sticky="ew", padx=8)
+        ttk.Label(human, textvariable=self.variation, width=4).grid(row=1, column=2)
+        ttk.Label(human, text="Typos it makes and fixes (%)").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         ttk.Scale(human, from_=0, to=8, variable=self.typos, orient="horizontal",
-                  command=lambda v: self.typos.set(round(float(v), 1))).grid(row=1, column=1, sticky="ew", padx=8)
-        ttk.Label(human, textvariable=self.typos, width=4).grid(row=1, column=2)
-        ttk.Checkbutton(human, text="Pause between words and after punctuation",
-                        variable=self.pauses).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=4)
+                  command=lambda v: self.typos.set(round(float(v), 1))).grid(row=2, column=1, sticky="ew", padx=8)
+        ttk.Label(human, textvariable=self.typos, width=4).grid(row=2, column=2)
+        ttk.Checkbutton(human, text="Pause at commas, full stops and new lines",
+                        variable=self.pauses).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=4)
         chosen = ttk.Frame(human)
-        chosen.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
-        ttk.Label(chosen, text="Always mess up:").pack(side="left")
-        ttk.Entry(chosen, textvariable=self.typo_targets, width=24).pack(side="left", padx=6)
+        chosen.grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+        ttk.Label(chosen, text="Always get these wrong:").pack(side="left")
+        ttk.Entry(chosen, textvariable=self.typo_targets, width=18).pack(side="left", padx=6)
         ttk.Checkbutton(chosen, text="Fix them", variable=self.fix_chosen).pack(side="left")
-        ttk.Label(chosen, text="e.g.  the, because, e", foreground="#777").pack(side="left", padx=8)
+        ttk.Label(chosen, text="e.g.  the, e", foreground="#777").pack(side="left", padx=8)
         human.columnconfigure(1, weight=1)
 
         # More options (folded away in the clean themes, like Speed)
@@ -2807,7 +2935,7 @@ class App:
     # ----- Write tab: chat with Claude -----
     def _build_write_tab(self, font):
         tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="  Write  ")
+        self.tabs.add(tab, text="  1  Write  ")
         cfg = load_config()
         self.chat_history = []      # the conversation: {"role": "user" / "assistant", "content"}
         self.chat_session = None    # Claude account: which conversation to carry on
@@ -3017,7 +3145,7 @@ class App:
     # ----- Polish tab: humanise and check, on one piece of text -----
     def _build_polish_tab(self, font):
         tab = ttk.Frame(self.tabs, padding=8)
-        self.tabs.add(tab, text="  Polish  ")
+        self.tabs.add(tab, text="  2  Polish  ")
         cfg = load_config()
         self.check_level = tk.IntVar(value=3)
         self.check_issues = []        # from the last Check
@@ -3139,6 +3267,7 @@ class App:
         self.theme_menu.add_checkbutton(label="Simple view", variable=self.simple, command=self._apply_simple)
         self.theme_menu.add_separator()
         self.theme_menu.add_command(label="Connect Claude…", command=self._open_connect)
+        self.theme_menu.add_command(label="How it works…", command=self._open_help)
         self.claude_menu = tk.Menu(self.root, tearoff=False)
         self.claude_menu.add_command(label="Connect Claude…", command=self._open_connect)
         self.claude_menu.add_separator()
@@ -3147,6 +3276,9 @@ class App:
         menubar = tk.Menu(self.root)
         menubar.add_cascade(label="Themes", menu=self.theme_menu)
         menubar.add_cascade(label="Claude", menu=self.claude_menu)
+        help_menu = tk.Menu(self.root, tearoff=False)
+        help_menu.add_command(label="How it works…", command=self._open_help)
+        menubar.add_cascade(label="Help", menu=help_menu)
         self._menubar = menubar
         self.root.configure(menu=menubar)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -3384,8 +3516,12 @@ class App:
         self._underline = c.create_line(a + 2, 42, b - 2, 42, fill=pal["accent"], width=3, capstyle="round")
         btn = c.create_text(c.winfo_width() - 8, 20, text="🎨 Theme", anchor="e", font=f, fill=pal["muted"])
         c.tag_bind(btn, "<Button-1>", lambda e: self.theme_menu.tk_popup(e.x_root, e.y_root))
-        c.tag_bind(btn, "<Enter>", lambda e, it=btn: self._tab_hover(it, True))
-        c.tag_bind(btn, "<Leave>", lambda e, it=btn: self._tab_hover(it, False))
+        help_x = c.bbox(btn)[0] - 18 if c.bbox(btn) else c.winfo_width() - 110
+        hb = c.create_text(help_x, 20, text="? Help", anchor="e", font=f, fill=pal["muted"])
+        c.tag_bind(hb, "<Button-1>", lambda e: self._open_help())
+        for it in (btn, hb):
+            c.tag_bind(it, "<Enter>", lambda e, it=it: self._tab_hover(it, True))
+            c.tag_bind(it, "<Leave>", lambda e, it=it: self._tab_hover(it, False))
         self._underline_at = (a, b)
 
     def _sections(self, pal):
@@ -3422,7 +3558,9 @@ class App:
             return
         r = self._speed_range()
         speed = f"random {r[0]}–{r[1]} WPM" if r else f"{max(1, self._safe_int(self.wpm, 60))} WPM"
-        human = f"typos {self.typos.get():g}% · rhythm {self.variation.get()}"
+        styles = {(20, 0.5): "Careful", (35, 1.5): "Natural", (60, 4.0): "Messy"}
+        human = styles.get((self.variation.get(), round(float(self.typos.get()), 1)),
+                           f"typos {self.typos.get():g}% · rhythm {self.variation.get()}")
         if self.typo_targets.get().strip():
             human += f" · always: {self.typo_targets.get().strip()[:20]}"
         more = f"{self._safe_int(self.delay, 5)} s to click in"
@@ -4015,6 +4153,14 @@ class App:
         cfg.update(values)
         save_config(cfg)
 
+    def _later(self, fn):
+        """Hand a result from a background check back to the window (safely, even
+        if the window is closing)."""
+        try:
+            self.root.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            pass
+
     def _spin(self, ring, busy, after):
         """A spinning ring next to a button while the AI writes (clean themes)."""
         if not busy() or not self._pal:
@@ -4126,7 +4272,7 @@ class App:
                 err = None
             except Exception as exc:
                 names, err = [], str(exc)
-            self.root.after(0, lambda: done(names, err))
+            self._later(lambda: done(names, err))
 
         def done(names, err):
             self.rw_models = names
@@ -4186,6 +4332,39 @@ class App:
         ttk.Button(row, text="Save", command=save).pack(side="right")
         ttk.Button(row, text="Remove key", command=lambda: (key.set(""), save())).pack(side="right", padx=4)
         win.bind("<Return>", lambda e: save())
+        self._theme_window(win)
+
+    # ----- Help: the whole app in a few plain steps -----
+    HELP = [
+        ("1  Write", "Chat with Claude. Ask for what you need, like \u201cwrite a short email asking for Friday "
+                     "off\u201d. Not set up yet? Press Connect Claude\u2026 (two steps, about a minute). "
+                     "Got your own text? Skip to Type."),
+        ("2  Polish", "Press Use this \u279c on Write and the answer comes here. Humanise makes it sound natural "
+                      "for who's reading it. Check finds mistakes. AI check shows habits that look like AI writing."),
+        ("3  Type", "Pick a speed, press Start typing, then click into your Word document before the countdown "
+                    "ends. Hands off the keyboard and mouse while it types."),
+        ("To stop", "Push the mouse into the top-left corner of the screen" + ("." if IS_MAC else
+                    ", or press Esc. F8 pauses.")),
+        ("Make it look real", "Under Make it look human, pick Careful, Natural or Messy. It types in bursts like a "
+                              "person, slows down for hard key reaches, and makes the mistakes people make, then "
+                              "fixes them. The finished text is always exactly right."),
+    ]
+
+    def _open_help(self):
+        old = getattr(self, "_help_win", None)
+        if old is not None and old.winfo_exists():
+            old.lift()
+            return
+        win = self._help_win = tk.Toplevel(self.root)
+        win.title("How Human Typer works")
+        win.attributes("-topmost", True)
+        f = ttk.Frame(win, padding=GUTTER)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="How it works", font=self.font_title).pack(anchor="w", pady=(0, 8))
+        for title, body in self.HELP:
+            ttk.Label(f, text=title, font=self.font_head).pack(anchor="w", pady=(10, 2))
+            ttk.Label(f, text=body, wraplength=440, justify="left").pack(anchor="w")
+        ttk.Button(f, text="Got it", command=win.destroy, style="Accent.TButton").pack(anchor="e", pady=(16, 0))
         self._theme_window(win)
 
     # ----- Connect Claude: one window for every way of connecting -----
@@ -4285,7 +4464,7 @@ class App:
         """Is Claude Code installed and logged in? (Checked in the background.)"""
         def work():
             info = claude_account_status()
-            self.root.after(0, lambda: done(info))
+            self._later(lambda: done(info))
 
         def done(info):
             self._account = info
