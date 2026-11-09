@@ -199,6 +199,53 @@ class Menus(unittest.TestCase):
         self.assertIn("Ready to type", out)
         self.assertEqual("".join(FakeTypist.last.typed), app.text, "Enter on Type typed it")
 
+    def test_write_is_a_chat_and_keys_still_jump(self):
+        """In Write, '2' on its own jumps to Polish (it isn't sent to Claude); answers stay on screen,
+        wrapped; unknown /commands get a hint."""
+        sent = []
+
+        def fake(prompt, system, on_text, stop, session=None, keep=False, **kw):
+            sent.append(prompt)
+            text = "word " * 60
+            on_text(text)
+            return text, "s1"
+        old = ht.claude_account_stream, ht.find_claude_cli
+        ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
+        try:
+            app, out = run_cli(["1", "hello", "/oops", "2", "q"], engine="account")
+        finally:
+            ht.claude_account_stream, ht.find_claude_cli = old
+        self.assertEqual(sent, ["hello"], "only the real message went to Claude")
+        self.assertIn("There's no /oops command", out)
+        self.assertIn("POLISH", out)
+        chat = out[out.index("claude › "):out.index("/oops")]
+        self.assertTrue(all(len(line) <= app.width + 2 for line in chat.split("\n")), "answer wrapped to the width")
+        self.assertEqual(out.count("CHAT ·"), 1, "the chat isn't redrawn after every answer")
+
+    def test_flow_wraps_streamed_text(self):
+        got = []
+        f = cli.Flow(got.append, 30, indent="    ")
+        for piece in ["The quick brown fox jumps ", "over the lazy dog and keeps", " running far away.\nNew line"]:
+            f.feed(piece)
+        f.end()
+        lines = "".join(got).split("\n")
+        self.assertTrue(all(len(l.rstrip()) <= 30 for l in lines), lines)
+        self.assertEqual(" ".join(w for l in lines for w in l.split()),
+                         "The quick brown fox jumps over the lazy dog and keeps running far away. New line")
+
+    def test_humanise_stopped_or_failed_keeps_text(self):
+        def fake(prompt, system, on_text, stop, session=None, keep=False, **kw):
+            raise RuntimeError("Claude Code isn't logged in to your Claude account. Press Connect Claude… → ② Log in, "
+                               "then try again.")
+        old = ht.claude_account_stream, ht.find_claude_cli
+        ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
+        try:
+            app, out = run_cli(["2", "h", "q"], text="My own text.", engine="account")
+        finally:
+            ht.claude_account_stream, ht.find_claude_cli = old
+        self.assertEqual(app.text, "My own text.")
+        self.assertIn("6 AI → n (log", out, "the message names the terminal's keys")
+
     def test_write_without_claude_points_to_connect(self):
         old = ht.find_claude_cli
         ht.find_claude_cli = lambda: None
