@@ -154,17 +154,38 @@ def clipboard_set(text):
 #  The terminal app
 # --------------------------------------------------------------------------- #
 
+GLOBAL = {"1": "write", "2": "polish", "3": "type", "4": "boxes", "5": "settings", "6": "connect", "?": "help",
+          "q": "quit", "esc": "home"}
+TABS = [("1", "Write", "write"), ("2", "Polish", "polish"), ("3", "Type", "type"), ("4", "Boxes", "boxes"),
+        None, ("5", "Settings", "settings"), ("6", "Connect", "connect"), ("?", "Help", "help")]
+BOX_MODES = ["click", "spot", "tab", "word"]
+BOX_MODE_NAMES = {"click": "I click into each box", "spot": "auto-click my spots",
+                  "tab": "Tab through a Word table", "word": "Word cells from a .docx"}
+
+
 class CLI:
+    """The terminal app. Every screen is the same workspace, top to bottom:
+
+        title bar  (and what's set: Claude, speed, style)
+        tab bar    1 Write  2 Polish  3 Type  4 Boxes | 5 Settings  6 Connect  ? Help
+        panel      the text you're working on (or the chat, the boxes, the settings)
+        actions    what this screen can do, one key each, in a grid
+        result     what the last action did (stays until the next one)
+        footer     the keys that work everywhere
+
+    The number keys jump to any screen from anywhere; Esc goes home; q quits.
+    """
+
     def __init__(self, ht, read=input, out=None, secret=None, typist_factory=None, colour=None, keys=None):
         self.ht = ht
         self.read_fn = read
         self.keys = keys               # one-keypress menus (None: type the choice and press Enter)
-        self._account = None           # Claude login status, checked once (it can take a second or two)
         self.out = out or sys.stdout
         self.secret_fn = secret
         self.p = Paint(colours_wanted(self.out) if colour is None else colour)
         self.typist_factory = typist_factory or ht.Typist
         self.typist = None
+        self._account = None           # Claude login status, checked once (it can take a second or two)
         cfg = ht.load_config()
         self.s = dict(DEFAULTS, **cfg.get("cli", {}))
         engine = cfg.get("engine", "account")
@@ -173,22 +194,155 @@ class CLI:
         self.audience = cfg.get("audience", ht.AUDIENCES[2])
         self.format = cfg.get("format", ht.FORMATS[0])
         self.text = ""
-        self.undo = []                 # earlier versions of the text (Polish)
+        self.undo = []                 # earlier versions of the text
         self.boxes = []                # {"text", "done", "spot", "cell"}
         self.box_mode = "click"
         self.doc = None                # a connected Word document: {"path", "cells"}
         self.chat = []                 # the conversation
         self.session = None            # Claude account: the conversation to carry on
+        self.msg = []                  # the result area: what the last action did
+        self.where = "home"
 
-    # ----- basics -----
+    # ================================================================== #
+    #  Drawing
+    # ================================================================== #
     @property
     def width(self):
-        return max(50, min(78, shutil.get_terminal_size((80, 24)).columns - 2))
+        return max(56, min(96, shutil.get_terminal_size((80, 24)).columns - 2))
 
     def say(self, text="", end="\n"):
         self.out.write(text + end)
         self.out.flush()
 
+    def clear(self):
+        if self.p.on:
+            self.out.write("\033[2J\033[H")
+
+    def tell(self, text, kind="grey"):
+        """Add a line to the result area (shown under the actions until the next action)."""
+        icon = {"green": "✓", "red": "✗", "yellow": "!", "grey": "·", "accent": "›"}.get(kind, "·")
+        for i, line in enumerate(textwrap.wrap(text, self.width - 6) or [""]):
+            self.msg.append(self.p((icon if i == 0 else " ") + " " + line, kind))
+
+    def note(self, text, kind="grey"):
+        """Print a line straight away (for steps that happen below the workspace)."""
+        icon = {"green": "✓", "red": "✗", "yellow": "!", "grey": "·", "accent": "›"}.get(kind, "·")
+        for i, line in enumerate(textwrap.wrap(text, self.width - 6) or [""]):
+            self.say("  " + self.p((icon if i == 0 else " ") + " " + line, kind))
+
+    def flush_msg(self):
+        for line in self.msg:
+            self.say("  " + line)
+        self.msg = []
+
+    def rule(self, title="", detail=""):
+        w = self.width
+        room = w - 8 - len(title)
+        if detail and len(detail) > room:
+            detail = detail[:max(0, room - 1)] + "…"
+        head = (self.p(title, "bold") + ("  " + self.p(detail, "grey") if detail else "")) if title else ""
+        fill = w - 2 - visible_len(head) - (1 if head else 0)
+        self.say("  " + head + (" " if head else "") + self.p("─" * max(2, fill), "grey"))
+
+    def panel(self, lines, title, height=None):
+        """The workspace: a rounded box, always the same width. height pads it so the screen doesn't jump."""
+        w = self.width - 2
+        t = f" {title} "
+        self.say("  " + self.p("╭─", "grey") + self.p(t, "accent", "bold") +
+                 self.p("─" * max(0, w - visible_len(t) - 3) + "╮", "grey"))
+        lines = list(lines)
+        if height:                                  # at least a few rows, so short text still looks like a page
+            lines += [""] * max(0, min(height, 3) - len(lines))
+        for line in lines:
+            if visible_len(line) > w - 4:
+                line = line[:w - 5] + "…"
+            self.say("  " + self.p("│", "grey") + " " + line + " " * max(0, w - 4 - visible_len(line)) + " " +
+                     self.p("│", "grey"))
+        self.say("  " + self.p("╰" + "─" * (w - 2) + "╯", "grey"))
+
+    def bar(self, fraction, width=28):
+        fraction = max(0.0, min(1.0, fraction))
+        full = int(round(width * fraction))
+        return self.p("█" * full, "accent") + self.p("░" * (width - full), "grey")
+
+    def header(self, where):
+        self.clear()
+        w = self.width
+        title = self.p(" ⌨  " + APP + " ", "bold", "white", "accent_bg")
+        ai = self.ai_status_short()
+        right = (self.p(ai, "green" if "✓" in ai else "yellow") + self.p("  ·  ", "grey") +
+                 self.p(self.status_speed(), "grey") + self.p("  ·  ", "grey") + self.p(self.style_name(), "grey"))
+        self.say("")
+        self.say("  " + title + " " * max(1, w - visible_len(title) - visible_len(right) - 2) + right)
+        tabs = []
+        for tab in TABS:
+            if tab is None:
+                tabs.append(self.p("│", "grey"))
+                continue
+            key, name, screen = tab
+            if not self.p.on:
+                tabs.append(f"[{key} {name}]" if screen == where else f" {key} {name} ")
+            elif screen == where:
+                tabs.append(self.p(f" {key} {name} ", "bold", "white", "accent_bg"))
+            else:
+                tabs.append(self.p(key, "accent", "bold") + self.p(f" {name} ", "grey"))
+        self.say("  " + " ".join(tabs))
+
+    def actions(self, items, title, detail=""):
+        """The actions grid: (key, label) pairs, a few to a row."""
+        self.rule(title.upper(), detail)
+        items = [i for i in items if i]
+        cols = 3 if self.width >= 72 else 2
+        cell = (self.width - 4) // cols
+        for r in range(0, len(items), cols):
+            row = ""
+            for key, label in items[r:r + cols]:
+                k = "⏎" if key == "enter" else key
+                text = self.p(k.rjust(2), "accent", "bold") + " " + label
+                row += text + " " * max(1, cell - visible_len(text))
+            self.say("  " + row.rstrip())
+
+    def footer(self):
+        if self.msg:
+            self.rule("result")
+            self.flush_msg()
+        self.say("  " + self.p("1-6 jump · ? help · Esc home · q quit", "grey"))
+
+    def screen(self, where, panel_lines, panel_title, items, title, detail="", height=8):
+        """Draw a whole screen and read one choice. Returns a key, or the name of a screen to go to."""
+        self.header(where)
+        self.panel(panel_lines, panel_title, height)
+        self.actions(items, title, detail)
+        self.footer()
+        local = {i[0] for i in items if i}
+        return self.choose(local)
+
+    def choose(self, local):
+        """One keypress (or a typed line). Local keys win; then the keys that work everywhere."""
+        prompt = f"  {self.p('›', 'accent', 'bold')} "
+        while True:
+            if self.keys:
+                self.out.write(prompt)
+                self.out.flush()
+                k = self.keys()
+            else:
+                k = self.read(prompt).strip().lower()
+            if k == "" and "enter" in local:
+                k = "enter"
+            if k in local:
+                if self.keys:
+                    self.say(self.p("⏎" if k == "enter" else k, "accent"))
+                return k
+            if k in GLOBAL:
+                if self.keys:
+                    self.say(self.p(k, "accent"))
+                return GLOBAL[k]
+            if not self.keys:
+                return ""                          # line mode: anything else just redraws
+
+    # ================================================================== #
+    #  Reading input
+    # ================================================================== #
     def read(self, prompt=""):
         return self.read_fn(prompt)
 
@@ -216,114 +370,25 @@ class CLI:
         import getpass
         return getpass.getpass(f"  › {label} ")
 
-    def clear(self):
-        if self.p.on:
-            self.out.write("\033[2J\033[H")
-
-    def note(self, text, kind="grey"):
-        icon = {"green": "✓", "red": "✗", "yellow": "!", "grey": "·", "accent": "›"}.get(kind, "·")
-        for i, line in enumerate(textwrap.wrap(text, self.width - 6) or [""]):
-            self.say("  " + self.p((icon if i == 0 else " ") + " " + line, kind))
+    def read_block(self, label="Paste or type your text"):
+        self.note(label + ". Finish with a line that's just a full stop ( . ).", "accent")
+        lines = []
+        while True:
+            try:
+                line = self.read("  " + self.p("│ ", "grey"))
+            except EOFError:
+                break
+            if line.strip() == ".":
+                break
+            lines.append(line)
+        return "\n".join(lines).strip("\n")
 
     def pause(self):
-        if self.keys:
-            self.out.write(self.p("  press any key ", "grey"))
-            self.out.flush()
-            self.keys()
-            self.say("")
-            return
-        self.read(self.p("  press Enter to go on ", "grey"))
+        """Only for one-line commands that print and stop; screens show results instead."""
 
-    def rule(self, title=""):
-        w = self.width
-        if title:
-            self.say("  " + self.p(title, "bold") + " " + self.p("─" * max(2, w - len(title) - 3), "grey"))
-        else:
-            self.say("  " + self.p("─" * (w - 2), "grey"))
-
-    def box(self, lines, title=""):
-        """A rounded box around some lines, with an optional title in the top edge."""
-        w = self.width - 2
-        if title:
-            t = f" {title} "
-            self.say("  " + self.p("╭─", "grey") + self.p(t, "accent", "bold") +
-                     self.p("─" * max(0, w - len(t) - 3) + "╮", "grey"))
-        else:
-            self.say("  " + self.p("╭" + "─" * (w - 2) + "╮", "grey"))
-        for line in lines:
-            pad = max(0, w - 4 - visible_len(line))
-            self.say("  " + self.p("│", "grey") + " " + line + " " * pad + " " + self.p("│", "grey"))
-        self.say("  " + self.p("╰" + "─" * (w - 2) + "╯", "grey"))
-
-    def bar(self, fraction, width=28):
-        fraction = max(0.0, min(1.0, fraction))
-        full = int(round(width * fraction))
-        return self.p("█" * full, "accent") + self.p("░" * (width - full), "grey")
-
-    def header(self, step=None):
-        self.clear()
-        w = self.width
-        title = self.p(" ⌨  " + APP + " ", "bold", "white", "accent_bg")
-        tag = self.p("terminal", "grey")
-        self.say("")
-        self.say("  " + title + " " * max(1, w - visible_len(title) - 10) + tag)
-        steps = []
-        for n, name in ((1, "Write"), (2, "Polish"), (3, "Type")):
-            label = f"{n} {name}"
-            steps.append(self.p(label, "accent", "bold", "under") if step == n else self.p(label, "grey"))
-        self.say("  " + self.p("  ›  ", "grey").join(steps))
-        self.say("")
-
-    def status_line(self):
-        words = len(self.text.split())
-        ai = self.ai_status_short()
-        parts = [self.p(f"{words} word{'' if words == 1 else 's'}", "bold"), self.status_speed(), self.style_name(),
-                 self.p(ai, "green" if "✓" in ai else "yellow")]
-        self.box(["  " + self.p("  ·  ", "grey").join(parts)], "now")
-
-    def menu(self, items, prompt="choose"):
-        """items: (key, label, detail) or None for a gap. Returns the key typed (lower case)."""
-        for item in items:
-            if item is None:
-                self.say("")
-                continue
-            key, label, detail = item
-            if key is None:                       # a group heading
-                self.say("   " + self.p(label.upper(), "grey", "bold"))
-                continue
-            k = self.p(f"[{key}]", "accent", "bold")
-            self.say(f"   {k} {label:<16}" + (self.p(detail, "grey") if detail else ""))
-        self.say("")
-        if self.keys:
-            valid = {item[0] for item in items if item and item[0]}
-            hint = "press a key" + (" · Enter = " + next(i[1] for i in items if i and i[0] == "enter")
-                                    if "enter" in valid else "") + " · Esc = back"
-            self.out.write(f"  {self.p('›', 'accent', 'bold')} {self.p(hint, 'grey')} ")
-            self.out.flush()
-            while True:
-                k = self.keys()
-                if k == "esc":
-                    k = "b" if "b" in valid else "q" if "q" in valid else ""
-                if k in valid or k == "" or (k == "b" and "b" in valid):
-                    self.say(self.p(k or "enter", "accent"))
-                    return k
-        return self.ask(prompt).lower()
-
-    def pick(self, keys):
-        """Read one choice from these keys (for screens that draw their own menu)."""
-        self.say("")
-        if self.keys:
-            self.out.write(f"  {self.p('›', 'accent', 'bold')} {self.p('press a key · Esc = back', 'grey')} ")
-            self.out.flush()
-            while True:
-                k = self.keys()
-                if k == "esc":
-                    k = "b"
-                if k in keys or k == "":
-                    self.say(self.p(k or "enter", "accent"))
-                    return k
-        return self.ask("choose").lower()
-
+    # ================================================================== #
+    #  State
+    # ================================================================== #
     def save(self):
         cfg = self.ht.load_config()
         cfg["cli"] = self.s
@@ -336,31 +401,11 @@ class CLI:
                 return name
         return f"rhythm {self.s['variation']} · typos {self.s['typos']:g}%"
 
-    def show_text(self, text=None, limit=10):
-        text = self.text if text is None else text
-        if not text.strip():
-            self.note("No text yet.")
-            return
-        lines = []
-        for para in text.split("\n"):
-            lines += textwrap.wrap(para, self.width - 8) or [""]
-        shown = lines[:limit]
-        if len(lines) > limit:
-            shown.append(self.p(f"… and {len(lines) - limit} more lines", "grey"))
-        self.box(shown, f"{len(text.split())} words")
+    def status_speed(self):
+        return f"{self.s['random'][0]}–{self.s['random'][1]} WPM" if self.s["random"] else f"{self.s['wpm']} WPM"
 
-    def read_block(self, label="Paste or type your text"):
-        self.note(label + ". When you're done, type a line with just a full stop ( . ) and press Enter.", "accent")
-        lines = []
-        while True:
-            try:
-                line = self.read("  " + self.p("│ ", "grey"))
-            except EOFError:
-                break
-            if line.strip() == ".":
-                break
-            lines.append(line)
-        return "\n".join(lines).strip("\n")
+    def avg_wpm(self):
+        return self.ht.average_speed(*self.s["random"]) if self.s["random"] else self.s["wpm"]
 
     def set_text(self, text, remember=True):
         if remember and self.text and text != self.text:
@@ -368,7 +413,27 @@ class CLI:
             del self.undo[:-20]
         self.text = text
 
-    # ----- talking to the AI -----
+    def text_lines(self, text=None, limit=8):
+        text = self.text if text is None else text
+        if not text.strip():
+            return [self.p("No text yet.", "grey")]
+        lines = []
+        for para in text.split("\n"):
+            lines += textwrap.wrap(para, self.width - 8) or [""]
+        if len(lines) > limit:
+            lines = lines[:limit - 1] + [self.p(f"… {len(lines) - limit + 1} more lines  (t on Home shows it all)", "grey")]
+        return lines
+
+    def text_title(self):
+        words = len(self.text.split())
+        if not words:
+            return "TEXT"
+        took = self.ht.format_duration(self.ht.seconds_for(self.text, self.avg_wpm()))
+        return f"TEXT · {words} word{'' if words == 1 else 's'} · about {took}"
+
+    # ================================================================== #
+    #  The AI
+    # ================================================================== #
     def ai_status_short(self):
         if self.engine == "account":
             return "Claude ✓" if self.ht.find_claude_cli() else "Claude: not connected"
@@ -381,11 +446,11 @@ class CLI:
 
     def ai_problem(self):
         if self.engine == "account" and not self.ht.find_claude_cli():
-            return self.ht.CLAUDE_SETUP_HELP.replace("Connect Claude…", "[6] Connect Claude")
+            return self.ht.CLAUDE_SETUP_HELP.replace("Connect Claude…", "6 Connect")
         if self.engine == "claude" and not self.key():
-            return "Add your Claude API key first: [6] Connect Claude → [k]."
+            return "Add your Claude API key first: 6 Connect → k."
         if self.engine == "local" and not self.model:
-            return "Pick a local AI model first: [6] Connect Claude → [m]."
+            return "Pick a local AI model first: 6 Connect → m."
         return None
 
     def ai(self, system, messages, on_text, session=None, keep=False):
@@ -417,24 +482,25 @@ class CLI:
             result["stopped"] = True
         return result
 
-    def humanise(self, text):
-        """Rewrite text with the Humaniser, showing it as it's written. Returns the new text or None."""
+    def humanise(self, text, show=True):
+        """Rewrite text with the Humaniser (shown as it's written). Returns the new text, or None."""
         problem = self.ai_problem()
         if problem:
-            self.note(problem, "red")
+            self.tell(problem, "red")
             return None
-        self.note(f"Humanising for {self.audience[2:]}, as {self.format}… (Ctrl+C stops)", "accent")
-        self.say("")
-        self.say("  ", end="")
+        if show:
+            self.note(f"Humanising for {self.audience[2:]}, as {self.format}… (Ctrl+C stops)", "accent")
+            self.say("  ", end="")
         r = self.ai(self.ht.HUMANISER_PROMPT,
                     [{"role": "user", "content": self.ht.humaniser_request(text, self.audience, self.format)}],
-                    lambda piece: self.say(piece.replace("\n", "\n  "), end=""))
-        self.say("\n")
+                    (lambda piece: self.say(piece.replace("\n", "\n  "), end="")) if show else (lambda piece: None))
+        if show:
+            self.say("")
         if r.get("stopped"):
-            self.note("Stopped. Your text wasn't changed.", "yellow")
+            self.tell("Stopped. The text wasn't changed.", "yellow")
             return None
         if "error" in r:
-            self.note(r["error"], "red")
+            self.tell(r["error"], "red")
             return None
         return (r.get("text") or "").strip() or None
 
@@ -443,91 +509,160 @@ class CLI:
         new, fixed, left = self.ht.apply_fixes(text, self.ht.check_text(text), level)
         return new, len(fixed), left
 
-    # ----- main menu -----
+    def workflow(self, text):
+        """Claude's answer -> humanise -> fix. Sets the text and returns True, or False if it stopped."""
+        done = []
+        if self.s["wf_humanise"]:
+            new = self.humanise(text)
+            if new is None:
+                return False
+            text = new
+            done.append("humanised")
+        if self.s["wf_fix"]:
+            text, n, _ = self.fix(text)
+            done.append(f"fixed {n} mistake{'' if n == 1 else 's'}")
+        self.set_text(text)
+        self.tell("Ready to type" + (f" ({', '.join(done)})" if done else "") + ". Press Enter to start.", "green")
+        return True
+
+    # ================================================================== #
+    #  The screens (each draws itself, takes one choice, says where to go next)
+    # ================================================================== #
     def run(self):
-        while True:
-            self.header()
-            self.status_line()
-            self.say("")
-            choice = self.menu([
-                (None, "Workflow", ""),
-                ("1", "Write", "chat with Claude: it writes it for you"),
-                ("2", "Polish", "humanise · check mistakes · AI check · APA"),
-                ("3", "Type", "type the text into your document"),
-                ("4", "Boxes", "one paragraph per box (worksheets, tables)"),
-                None,
-                (None, "Tools", ""),
-                ("t", "Text", "see, paste, open or copy the text"),
-                ("5", "Settings", "speed · style · typos · countdown"),
-                ("6", "Connect", "Claude account · API key · local AI · Claude app"),
-                ("?", "Help", "how it all works"),
-                ("q", "Quit", ""),
-            ])
+        screens = {"home": self.home, "write": self.write, "polish": self.polish, "type": self.type_screen,
+                   "boxes": self.boxes_screen, "settings": self.settings, "connect": self.connect, "help": self.help}
+        while self.where != "quit":
             try:
-                if choice in ("q", "quit", "exit"):
-                    self.save()
-                    self.say(self.p("  Bye!", "grey"))
-                    return
-                action = {"1": self.write, "2": self.polish, "3": self.type_screen, "4": self.boxes_screen,
-                          "t": self.text_screen, "5": self.settings, "6": self.connect, "?": self.help,
-                          "h": self.help}.get(choice)
-                if action:
-                    action()
+                self.where = screens[self.where]() or self.where
             except KeyboardInterrupt:
                 self.say("")
+                self.tell("Stopped.", "yellow")
+        self.save()
+        self.say(self.p("  Bye!", "grey"))
 
-    # ----- 1 Write -----
+    # ----- Home: the text, and ways to bring it in or take it out -----
+    def home(self):
+        nothing = not self.text.strip()
+        k = self.screen("home", self.text_lines(limit=10), self.text_title(), [
+            ("e", "Paste / type"), ("v", "From clipboard"), ("o", "Open a file"),
+            ("t", "See it all"), ("c", "Copy"), ("x", "Clear"),
+            ("enter", "Write with Claude" if nothing else "Type it")],
+            "home", "start at 1 Write, or bring in your own text" if nothing else "next: 2 Polish or 3 Type",
+            height=10)
+        if k in GLOBAL.values():
+            return k
+        if k == "enter":
+            return "write" if nothing else "type"
+        if k == "e":
+            new = self.read_block()
+            if new.strip():
+                self.set_text(new)
+        elif k == "v":
+            clip = clipboard_get()
+            if clip and clip.strip():
+                self.set_text(clip.strip("\n"))
+                self.tell(f"Pasted {len(clip.split())} words from the clipboard.", "green")
+            else:
+                self.tell("The clipboard is empty (or can't be read here). Use e and paste instead.", "yellow")
+        elif k == "o":
+            self.open_file()
+        elif k == "t":
+            for line in self.text_lines(limit=10 ** 6):
+                self.msg.append(line)
+        elif k == "c":
+            self.tell("Copied." if self.text and clipboard_set(self.text) else "Couldn't copy here.",
+                      "green" if self.text else "yellow")
+        elif k == "x":
+            self.set_text("")
+            self.tell("Cleared (u in 2 Polish brings it back).", "green")
+
+    def open_file(self):
+        path = os.path.expanduser(self.ask("Drag the file here (or type its path)").strip().strip("'\""))
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".docx"):
+                import docx
+                text = "\n\n".join(p.text for p in docx.Document(path).paragraphs if p.text.strip())
+            else:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+        except Exception as exc:
+            self.tell(f"Couldn't open it: {exc}", "red")
+            return
+        self.set_text(text.strip("\n"))
+        self.tell(f"Opened {os.path.basename(path)}: {len(text.split())} words.", "green")
+
+    # ----- 1 Write: the chat -----
+    def chat_lines(self, limit=12):
+        if not self.chat:
+            return [self.p("Ask Claude to write something, for example:", "grey"),
+                    self.p("  “Write a short email asking my boss for Friday off”", "grey"),
+                    self.p("  “Help my son answer: why do leaves change colour? Year 5 level”", "grey"),
+                    "",
+                    self.p("Then /use: it's humanised, checked and ready to type.", "grey")]
+        lines = []
+        for m in self.chat:
+            who = self.p("you › ", "accent", "bold") if m["role"] == "user" else self.p("claude › ", "bold")
+            first = True
+            for para in m["content"].split("\n"):
+                for line in textwrap.wrap(para, self.width - 18) or [""]:
+                    lines.append((who if first else " " * (6 if m["role"] == "user" else 9)) + line)
+                    first = False
+            lines.append("")
+        return lines[-limit:]
+
     def write(self):
-        self.header(1)
-        self.rule("Write with Claude")
-        self.note(f"Using: {self.ai_status_short()}")
+        self.header("write")
+        self.panel(self.chat_lines(), f"CHAT · {self.ai_status_short()}", 12)
+        wf = []
+        if self.s["wf_humanise"]:
+            wf.append("humanise")
+        if self.s["wf_fix"]:
+            wf.append("fix")
+        self.rule("WRITE", "type a message and press Enter · empty line = back")
+        self.say("  " + self.p("/use", "accent", "bold") + self.p(f" → {' + '.join(wf + ['type'])}   ", "grey") +
+                 self.p("/paste", "accent", "bold") + self.p(" long message   ", "grey") +
+                 self.p("/copy  /new  /1-6", "accent", "bold") + self.p(" jump", "grey"))
         problem = self.ai_problem()
         if problem:
-            self.note(problem, "red")
-            if self.yes("Open Connect Claude now?"):
-                self.connect()
-            return
-        self.say("")
-        self.note("Type a message and press Enter. Ctrl+C stops a reply.")
-        self.say("  " + self.p("/use", "accent") + self.p("  send the last answer on (humanise, fix, type)", "grey"))
-        self.say("  " + self.p("/paste", "accent") + self.p("  a long message over several lines", "grey"))
-        self.say("  " + self.p("/copy  /new  /back", "accent") + self.p("  copy the answer · new chat · main menu", "grey"))
-        for m in self.chat:
-            self.show_message(m["role"], m["content"])
-        while True:
-            self.say("")
-            try:
-                msg = self.read(self.p("  you › ", "accent", "bold")).strip()
-            except EOFError:
-                return
-            if not msg:
-                continue
-            cmd = msg.lower()
-            if cmd in ("/back", "/b", "/q", "/menu"):
-                return
-            if cmd == "/new":
-                self.chat, self.session = [], None
-                self.note("New chat.", "green")
-                continue
-            if cmd == "/copy":
-                ans = self.last_answer()
-                self.note("Copied." if ans and clipboard_set(ans) else "Nothing copied (no answer, or no clipboard).",
-                          "green" if ans else "yellow")
-                continue
-            if cmd == "/use":
-                if self.workflow():
-                    return
-                continue
-            if cmd == "/paste":
-                msg = self.read_block("Type or paste your message")
-                if not msg.strip():
-                    continue
-            self.send(msg)
-
-    def show_message(self, role, text):
-        who = self.p("you › ", "accent", "bold") if role == "user" else self.p("claude › ", "bold")
-        self.say("")
-        self.say("  " + who + text.replace("\n", "\n  "))
+            self.tell(problem, "red")
+        self.footer()
+        if problem:
+            k = self.choose({"enter"})
+            return "connect" if k == "enter" else k
+        try:
+            msg = self.read(self.p("  you › ", "accent", "bold")).strip()
+        except EOFError:
+            return "quit"
+        if not msg:
+            return "home"
+        cmd = msg.lower()
+        if re.fullmatch(r"/[1-6?]", cmd):
+            return GLOBAL[cmd[1]]
+        if cmd in ("/back", "/b", "/menu", "/home"):
+            return "home"
+        if cmd == "/new":
+            self.chat, self.session = [], None
+            self.tell("New chat.", "green")
+            return None
+        if cmd == "/copy":
+            ans = self.last_answer()
+            self.tell("Copied." if ans and clipboard_set(ans) else "Nothing copied (no answer, or no clipboard).",
+                      "green" if ans else "yellow")
+            return None
+        if cmd == "/use":
+            ans = self.last_answer()
+            if not ans:
+                self.tell("Ask Claude to write something first.", "yellow")
+                return None
+            return "type" if self.workflow(ans) else None
+        if cmd == "/paste":
+            msg = self.read_block("Type or paste your message")
+            if not msg.strip():
+                return None
+        self.send(msg)
+        return None
 
     def send(self, msg):
         self.chat.append({"role": "user", "content": msg})
@@ -544,16 +679,15 @@ class CLI:
         reply = "".join(got)
         if not r.get("stopped") and "error" not in r and not reply.strip() and r.get("text"):
             reply = r["text"]
-            self.say(reply.replace("\n", "\n  "), end="")
         self.say("")
         if "error" in r and not r.get("stopped"):
             self.chat.pop()
-            self.note(r["error"], "red")
+            self.tell(r["error"], "red")
             return
         if reply.strip():
             self.chat.append({"role": "assistant", "content": reply})
             if r.get("stopped"):
-                self.note("Stopped.", "yellow")
+                self.tell("Stopped.", "yellow")
         else:
             self.chat.pop()
 
@@ -563,133 +697,90 @@ class CLI:
                 return m["content"].strip()
         return ""
 
-    def workflow(self):
-        """Claude's last answer -> humanise -> fix -> ready to type. True if it went on to Type."""
-        text = self.last_answer()
-        if not text:
-            self.note("Ask Claude to write something first.", "yellow")
-            return False
-        done = []
-        if self.s["wf_humanise"]:
-            new = self.humanise(text)
-            if new is None:
-                return False
-            text = new
-            done.append("humanised")
-        if self.s["wf_fix"]:
-            text, n, _ = self.fix(text)
-            done.append(f"fixed {n} mistake{'' if n == 1 else 's'}")
-        self.set_text(text)
-        self.note("Ready to type" + (f" ({', '.join(done)})" if done else "") + ".", "green")
-        if self.yes("Type it now?"):
-            self.type_screen()
-            return True
-        return False
-
     # ----- 2 Polish -----
     def polish(self):
-        while True:
-            self.header(2)
-            self.rule("Polish")
-            self.show_text(limit=8)
-            self.say("")
-            level = self.s["check_level"]
-            choice = self.menu([
-                ("h", "Humanise", f"for {self.audience[2:]}, as {self.format}"),
-                ("a", "Audience", "who it's for, and what shape (format)"),
-                None,
-                ("c", "Check", f"find mistakes (level {level}: {self.ht.LEVEL_NAMES[level].split(' (')[0]})"),
-                ("f", "Fix all", f"fix every mistake up to level {level}"),
-                ("l", "Level", "how much Check fixes, 1-5"),
-                ("i", "AI check", "how much it reads like AI writing (a hint, not proof)"),
-                ("r", "APA citations", "tidy the in-text references"),
-                ("m", "APA reference", "make a reference for a source"),
-                ("n", "Natural tone", "quick offline tidy: contractions, plain words"),
-                None,
-                ("e", "Edit text", "paste or type new text"),
-                ("u", "Undo", "back to the version before the last change"),
-                ("t", "Type it", "go to 3 Type"),
-                ("b", "Back", ""),
-            ])
-            if choice in ("b", ""):
-                return
-            if choice == "t":
-                self.type_screen()
-                return
-            if choice == "e":
-                new = self.read_block()
-                if new.strip():
-                    self.set_text(new)
-                continue
-            if choice == "u":
-                if self.undo:
-                    self.text = self.undo.pop()
-                    self.note("Undone.", "green")
-                else:
-                    self.note("Nothing to undo.", "yellow")
-                self.pause()
-                continue
-            if choice == "a":
-                self.pick_audience()
-                continue
-            if choice == "l":
-                lv = self.ask("Fix level 1-5", level)
-                if lv.isdigit() and 1 <= int(lv) <= 5:
-                    self.s["check_level"] = int(lv)
-                    self.save()
-                continue
-            if not self.text.strip():
-                self.note("There's no text yet. Press [e] to paste some, or write it in 1 Write.", "yellow")
-                self.pause()
-                continue
-            if choice == "h":
-                new = self.humanise(self.text)
-                if new:
-                    self.set_text(new)
-                    self.note("Done. Read it over, especially names, numbers and dates. [u] undoes it.", "green")
-            elif choice == "c":
-                self.check()
-            elif choice == "f":
-                new, n, left = self.fix(self.text)
+        level = self.s["check_level"]
+        lname = self.ht.LEVEL_NAMES[level].split(" (")[0].lstrip("+ ")
+        k = self.screen("polish", self.text_lines(), self.text_title(), [
+            ("h", "Humanise"), ("c", "Check mistakes"), ("i", "AI check"),
+            ("a", "Audience/format"), ("f", "Fix all"), ("r", "APA citations"),
+            ("n", "Natural tone"), ("l", f"Level ({level})"), ("m", "APA reference"),
+            ("e", "Edit text"), ("u", "Undo"), ("enter", "Type it")],
+            "polish", f"humanise for {self.audience[2:]} · as {self.format} · check level {level} ({lname})")
+        if k in GLOBAL.values():
+            return k
+        if k == "enter":
+            return "type"
+        if k == "e":
+            new = self.read_block()
+            if new.strip():
                 self.set_text(new)
-                self.note(f"Fixed {n} mistake{'' if n == 1 else 's'}." +
-                          (f" {left} more noticed but above level {level}." if left else ""), "green")
-            elif choice == "i":
-                self.ai_check()
-            elif choice == "r":
-                new, changes = self.ht.fix_in_text_citations(self.text)
-                if changes:
-                    self.set_text(new)
-                    for a, b in changes:
-                        self.say(f"    {a}  {self.p('→', 'grey')}  {self.p(b, 'green')}")
-                self.note(f"Tidied {len(changes)} citation{'' if len(changes) == 1 else 's'}." if changes else
-                          "The citations already look like APA 7 (or there aren't any).", "green")
-            elif choice == "m":
-                self.apa_reference()
-            elif choice == "n":
-                new, n = self.ht.naturalize(self.text)
-                self.set_text(new)
-                self.note(f"{n} change{'' if n == 1 else 's'}. [u] undoes it." if n else "Nothing needed changing.",
-                          "green")
+            return None
+        if k == "u":
+            if self.undo:
+                self.text = self.undo.pop()
+                self.tell("Undone.", "green")
             else:
-                continue
-            self.pause()
+                self.tell("Nothing to undo.", "yellow")
+            return None
+        if k == "a":
+            self.pick_audience()
+            return None
+        if k == "l":
+            lv = self.ask("Fix level: 1 confusing only · 2 spelling · 3 grammar · 4 punctuation · 5 style", level)
+            if lv.isdigit() and 1 <= int(lv) <= 5:
+                self.s["check_level"] = int(lv)
+                self.save()
+            return None
+        if k == "m":
+            self.apa_reference()
+            return None
+        if not self.text.strip():
+            if k:
+                self.tell("There's no text yet. Press e to paste some, or write it in 1 Write.", "yellow")
+            return None
+        if k == "h":
+            new = self.humanise(self.text)
+            if new:
+                self.set_text(new)
+                self.tell("Humanised. Read it over, especially names, numbers and dates. u undoes it.", "green")
+        elif k == "c":
+            self.check()
+        elif k == "f":
+            new, n, left = self.fix(self.text)
+            self.set_text(new)
+            self.tell(f"Fixed {n} mistake{'' if n == 1 else 's'}." +
+                      (f" {left} more noticed but above level {level}." if left else "") + " u undoes it.", "green")
+        elif k == "i":
+            self.ai_check()
+        elif k == "r":
+            new, changes = self.ht.fix_in_text_citations(self.text)
+            if changes:
+                self.set_text(new)
+                for a, b in changes:
+                    self.msg.append(f"{a}  {self.p('→', 'grey')}  {self.p(b, 'green')}")
+            self.tell(f"Tidied {len(changes)} citation{'' if len(changes) == 1 else 's'}." if changes else
+                      "The citations already look like APA 7 (or there aren't any).", "green")
+        elif k == "n":
+            new, n = self.ht.naturalize(self.text)
+            self.set_text(new)
+            self.tell(f"Natural tone: {n} change{'' if n == 1 else 's'}. u undoes it." if n else
+                      "Natural tone: nothing needed changing.", "green")
+        return None
 
     def pick_audience(self):
-        for i, a in enumerate(self.ht.AUDIENCES, 1):
-            self.say(f"   {self.p(f'[{i}]', 'accent')} {a[2:]}")
+        self.say("  " + "   ".join(f"{self.p(str(i), 'accent')} {a[2:]}" for i, a in enumerate(self.ht.AUDIENCES, 1)))
         a = self.ask("Audience", self.ht.AUDIENCES.index(self.audience) + 1)
         if a.isdigit() and 1 <= int(a) <= len(self.ht.AUDIENCES):
             self.audience = self.ht.AUDIENCES[int(a) - 1]
-        for i, f in enumerate(self.ht.FORMATS, 1):
-            self.say(f"   {self.p(f'[{i}]', 'accent')} {f}")
+        self.say("  " + "   ".join(f"{self.p(str(i), 'accent')} {f}" for i, f in enumerate(self.ht.FORMATS, 1)))
         f = self.ask("Format", self.ht.FORMATS.index(self.format) + 1)
         if f.isdigit() and 1 <= int(f) <= len(self.ht.FORMATS):
             self.format = self.ht.FORMATS[int(f) - 1]
         self.save()
 
     def highlight(self, text, spans):
-        """spans: (start, end, colour). Returns the text with those parts coloured."""
+        """spans: (start, end, colour). Returns the text with those parts coloured ([marked] without colour)."""
         out, pos = [], 0
         for a, b, colour in sorted(spans):
             if a < pos:
@@ -703,44 +794,35 @@ class CLI:
         level = self.s["check_level"]
         issues = [d for d in self.ht.check_text(self.text) if d["level"] <= level]
         colours = {1: "hl_red", 2: "hl_red", 3: "hl_orange", 4: "hl_blue", 5: "hl_grey"}
-        self.say("")
-        self.say("  " + self.highlight(self.text, [(d["start"], d["end"], colours[d["level"]]) for d in issues])
-                 .replace("\n", "\n  "))
-        self.say("")
         if not issues:
-            self.note(f"No mistakes found at level {level}.", "green")
+            self.tell(f"No mistakes found at level {level}.", "green")
             return
+        marked = self.highlight(self.text, [(d["start"], d["end"], colours[d["level"]]) for d in issues])
+        self.msg += marked.split("\n") + [""]
         for n, d in enumerate(issues, 1):
             if d["suggestion"] is None:
                 line = f"⚑ {d['type']}: {d['note']}"
             else:
-                line = f"{d['original']}  {self.p('→', 'grey')}  {self.p(d['suggestion'], 'green')}  " + \
-                    self.p(f"({d['type']}{', ' + d['note'] if d['note'] else ''})", "grey")
-            self.say(f"   {self.p(str(n).rjust(2), 'grey')}  {line}")
-        self.say("")
-        if self.yes(f"Fix them all now (level {level})?"):
-            new, n, _ = self.fix(self.text)
-            self.set_text(new)
-            self.note(f"Fixed {n}. [u] undoes it.", "green")
+                line = (f"{d['original']}  {self.p('→', 'grey')}  {self.p(d['suggestion'], 'green')}  " +
+                        self.p(f"({d['type']}{', ' + d['note'] if d['note'] else ''})", "grey"))
+            self.msg.append(f"{self.p(str(n).rjust(2), 'grey')}  {line}")
+        self.tell(f"{len(issues)} to look at. f fixes them all.", "accent")
 
     def ai_check(self):
         if len(self.text.split()) < 10:
-            self.note("Use a bit more text (a few sentences) for the AI check.", "yellow")
+            self.tell("Use a bit more text (a few sentences) for the AI check.", "yellow")
             return
         r = self.ht.ai_report(self.text)
         colour = {"High": "red", "Medium": "yellow", "Low": "green"}[r["verdict"]]
-        self.say("")
-        self.say(f"  AI-style score  {self.bar(r['score'] / 100, 20)}  " +
-                 self.p(f"{r['score']}/100  {r['verdict']}", colour, "bold"))
+        self.msg.append(f"AI-style score  {self.bar(r['score'] / 100, 20)}  " +
+                        self.p(f"{r['score']}/100  {r['verdict']}", colour, "bold"))
         for reason in r["reasons"][:6]:
-            self.say("    " + self.p("• " + reason, "grey"))
-        self.say("")
+            self.msg.append("  " + self.p("• " + reason, "grey"))
         spans = [(x["start"], x["end"], "hl_orange" if x["strength"] == 2 else "hl_yellow")
                  for x in r["sentences"] if x["strength"]]
-        self.say("  " + self.highlight(self.text, spans).replace("\n", "\n  "))
-        self.say("")
-        self.note("Yellow = some AI habits, orange = many. This can't prove who wrote something: careful writers can "
-                  "score high, and edited AI text can score low.")
+        self.msg += [""] + self.highlight(self.text, spans).split("\n") + [""]
+        self.tell("Yellow = some AI habits, orange = many. A hint, not proof: careful writers can score high, "
+                  "and edited AI text can score low.")
 
     def apa_reference(self):
         org = self.yes("Is the author an organisation (not people)?", False)
@@ -750,48 +832,64 @@ class CLI:
         book = self.yes("Is it a book?", False)
         site = self.ask("Publisher" if book else "Website name")
         url = "" if book else self.ask("Link (URL)")
-        self.say("")
-        self.say("  In-text:    " + self.p(self.ht.apa_in_text(authors, year, org), "green"))
-        self.say("  Reference:  " + self.p(self.ht.apa_reference(authors, year, title, site, url, org,
-                                                                 "book" if book else "website"), "green"))
-        self.note("Put the title in italics in your document.")
+        self.msg.append("In-text:    " + self.p(self.ht.apa_in_text(authors, year, org), "green"))
+        self.msg.append("Reference:  " + self.p(self.ht.apa_reference(authors, year, title, site, url, org,
+                                                                      "book" if book else "website"), "green"))
+        self.tell("Put the title in italics in your document.")
 
     # ----- 3 Type -----
     def type_screen(self):
-        self.header(3)
-        self.rule("Type")
-        if not self.text.strip():
-            self.note("There's nothing to type yet. Write it in [1], paste it in [t] Text, or press Enter to paste "
-                      "it now.", "yellow")
+        bg = " · in the background (Word)" if self.s["background"] else ""
+        k = self.screen("type", self.text_lines(), self.text_title(), [
+            ("enter", "Start typing"), ("+", "Faster (+10)"), ("-", "Slower (−10)"),
+            ("y", "Style"), ("d", f"Countdown ({self.s['delay']} s)"), ("g", "Background"),
+            ("e", "Edit text")],
+            "type", f"{self.status_speed()} · {self.style_name()} · click into your document within "
+                    f"{self.s['delay']} s{bg}")
+        if k in GLOBAL.values():
+            return k
+        s = self.s
+        if k in ("+", "-"):
+            if s["random"]:
+                d = 10 if k == "+" else -10
+                s["random"] = [max(1, s["random"][0] + d), max(1, s["random"][1] + d)]
+            else:
+                s["wpm"] = max(5, min(2000, s["wpm"] + (10 if k == "+" else -10)))
+            self.save()
+        elif k == "y":
+            names = list(STYLES)
+            cur = self.style_name()
+            nxt = names[(names.index(cur) + 1) % len(names)] if cur in names else "Natural"
+            s["variation"], s["typos"] = STYLES[nxt]
+            s["pauses"] = True
+            self.save()
+            self.tell(f"Style: {nxt}.", "green")
+        elif k == "d":
+            v = self.ask("Seconds to click into your document (1-60)", s["delay"])
+            if v.isdigit() and 1 <= int(v) <= 60:
+                s["delay"] = int(v)
+                self.save()
+        elif k == "g":
+            s["background"] = not s["background"]
+            self.save()
+            self.tell("Background typing (Word only) is " + ("on." if s["background"] else "off."), "green")
+        elif k == "e":
             new = self.read_block()
-            if not new.strip():
-                return
-            self.set_text(new)
-        self.show_text(limit=6)
-        avg = self.ht.average_speed(*self.s["random"]) if self.s["random"] else self.s["wpm"]
-        self.note(f"About {self.ht.format_duration(self.ht.seconds_for(self.text, avg))} at "
-                  f"{self.status_speed()}, {self.style_name()}"
-                  + (", in the background (Word)" if self.s["background"] else "") + ".")
-        self.say("")
-        choice = self.menu([("enter", "Start typing", f"then click into your document within {self.s['delay']} s"),
-                            ("s", "Settings", "speed, style, typos"),
-                            ("b", "Back", "")], prompt="press Enter to start")
-        if choice == "s":
-            self.settings()
-            return self.type_screen()
-        if choice not in ("", "enter"):
-            return
-        self.type_text(self.text)
-
-    def status_speed(self):
-        return f"{self.s['random'][0]}–{self.s['random'][1]} WPM" if self.s["random"] else f"{self.s['wpm']} WPM"
+            if new.strip():
+                self.set_text(new)
+        elif k == "enter":
+            if not self.text.strip():
+                self.tell("There's nothing to type yet. Press e to paste it, or write it in 1 Write.", "yellow")
+                return None
+            self.type_text(self.text)
+        return None
 
     def make_typist(self):
         if self.typist is None:
             try:
                 self.typist = self.typist_factory()
             except Exception as exc:
-                self.note("Can't press keys on this computer: " + str(exc), "red")
+                self.tell("Can't press keys on this computer: " + str(exc), "red")
                 return None
         return self.typist
 
@@ -802,7 +900,8 @@ class CLI:
                                   fix_chosen=self.s["fix_chosen"])
 
     def type_text(self, text, plan=None, jumps=None, countdown=None, label="Typing"):
-        """Type with a countdown and a live progress bar. Ctrl+C stops. Returns True when it finished."""
+        """Type with a countdown and a live progress bar (under the workspace). Ctrl+C stops.
+        Returns True when it finished."""
         t = self.make_typist()
         if t is None:
             return False
@@ -810,7 +909,7 @@ class CLI:
         if not bg:
             problem = self.ht.mac_permission_problem()
             if problem:
-                self.note(problem, "red")
+                self.tell(problem, "red")
                 return False
         t.wpm = self.s["wpm"]
         t.wpm_range = tuple(self.s["random"]) if self.s["random"] else None
@@ -819,8 +918,8 @@ class CLI:
                 countdown if countdown is not None else (2 if bg else self.s["delay"]),
                 jumps, output=output, corner_stop=not bg)
         listener = self.hotkeys(t) if not bg else None
-        stop_hint = "Ctrl+C here" + ("" if bg else " · mouse to the top-left corner" +
-                                     ("" if sys.platform == "darwin" else " · Esc  (F8 pauses)"))
+        stop_hint = "Ctrl+C" + ("" if bg else ", or the mouse to the top-left corner" +
+                                ("" if sys.platform == "darwin" else ", or Esc (F8 pauses)"))
         self.say("")
         last = None
         try:
@@ -857,14 +956,13 @@ class CLI:
                     pass
         self.say("")
         if t.state == "done":
-            self.say("  " + self.p("✓ Finished!", "green", "bold") + "  " + self.bar(1.0) + " 100%")
-            self.pause()
+            self.tell(f"Finished! {t.total_chars} characters typed.", "green")
             return True
         if t.state == "error":
-            self.note(t.error, "red")
+            self.tell(t.error, "red")
         else:
-            self.note(f"Stopped. {t.done_chars} of {t.total_chars} characters typed. ({stop_hint})", "yellow")
-        self.pause()
+            self.tell(f"Stopped: {t.done_chars} of {t.total_chars} characters typed. (To stop: {stop_hint}.)",
+                      "yellow")
         return False
 
     def hotkeys(self, t):
@@ -887,114 +985,108 @@ class CLI:
             return None
 
     # ----- 4 Boxes -----
+    def box_lines(self):
+        if not self.boxes:
+            return [self.p("No boxes yet. p pastes text and splits it, one paragraph per box;", "grey"),
+                    self.p("s splits the text you already have.", "grey")]
+        lines = []
+        for i, b in enumerate(self.boxes, 1):
+            mark = self.p("✓", "green") if b["done"] else self.p("○", "grey")
+            where = ""
+            if self.box_mode == "spot":
+                where = self.p(f"  @ {b['spot']}" if b["spot"] else "  (no spot)", "grey")
+            elif self.box_mode == "word":
+                where = self.p("  → " + b["cell"]["label"] if b["cell"] else "  → skipped", "grey")
+            first = b["text"].split("\n")[0]
+            room = self.width - 14 - visible_len(where)
+            lines.append(f"{mark} {self.p(str(i).rjust(2), 'bold')}  " +
+                         (first if len(first) <= room else first[:max(5, room - 1)] + "…") + where)
+        return lines
+
     def boxes_screen(self):
-        modes = {"click": "I click into each box", "spot": "Auto-click my spots",
-                 "tab": "Press Tab (a table in Word)", "word": "Word cells (pick a .docx)"}
-        while True:
-            self.header(3)
-            self.rule("Boxes · one paragraph each")
-            if not self.boxes:
-                self.note("No boxes yet. [p] pastes text and splits it, one paragraph per box.")
-            for i, b in enumerate(self.boxes, 1):
-                mark = self.p("✓", "green") if b["done"] else self.p("○", "grey")
-                where = ""
-                if self.box_mode == "spot":
-                    where = self.p(f"  spot {b['spot']}" if b["spot"] else "  no spot yet", "grey")
-                elif self.box_mode == "word":
-                    where = self.p("  → " + b["cell"]["label"] if b["cell"] else "  → skipped", "grey")
-                first = b["text"].split("\n")[0]
-                self.say(f"   {mark} {self.p(str(i).rjust(2), 'bold')}  {first[:self.width - 30]}"
-                         f"{'…' if len(first) > self.width - 30 else ''}{where}")
-            self.say("")
-            self.note("Getting to each box: " + self.p(modes[self.box_mode], "bold"))
-            self.say("")
-            choice = self.menu([
-                ("enter", "Type", "type the boxes the way picked below"),
-                ("p", "Paste & split", "paste text, one paragraph per box"),
-                ("s", "Split my text", "split the current text"),
-                ("e", "Edit a box", ""),
-                ("x", "Remove a box", ""),
-                ("r", "Start over", "clear the ✓ marks"),
-                None,
-                ("1", "I click", modes["click"]),
-                ("2", "Spots", modes["spot"] + (" · [o] set spots" if self.box_mode == "spot" else "")),
-                ("3", "Tab", modes["tab"]),
-                ("4", "Word cells", modes["word"] + (" · [w] change cells" if self.doc else "")),
-                ("b", "Back", ""),
-            ], prompt="press Enter to type, or choose")
-            if choice == "b":
-                return
-            if choice in ("p", "s"):
-                text = self.read_block() if choice == "p" else self.text
-                parts = self.ht.split_paragraphs(text)
-                self.boxes = [{"text": t, "done": False, "spot": None, "cell": None} for t in parts]
-                self.fill_cells()
-            elif choice == "e":
-                n = self.ask("Which box?")
-                if n.isdigit() and 1 <= int(n) <= len(self.boxes):
-                    new = self.read_block(f"New text for box {n}")
-                    if new.strip():
-                        self.boxes[int(n) - 1]["text"] = new
-            elif choice == "x":
-                n = self.ask("Remove which box?")
-                if n.isdigit() and 1 <= int(n) <= len(self.boxes):
-                    del self.boxes[int(n) - 1]
-            elif choice == "r":
-                for b in self.boxes:
-                    b["done"] = False
-            elif choice in ("1", "2", "3", "4"):
-                self.box_mode = {"1": "click", "2": "spot", "3": "tab", "4": "word"}[choice]
-                if self.box_mode == "spot" and not any(b["spot"] for b in self.boxes):
-                    self.set_spots()
-                if self.box_mode == "word" and not self.doc:
-                    self.connect_doc()
-            elif choice == "o":
-                self.set_spots()
-            elif choice == "w":
-                self.pick_cells()
-            elif choice in ("", "enter"):
-                self.type_boxes()
+        done = sum(1 for b in self.boxes if b["done"])
+        items = [("enter", "Type the boxes"), ("p", "Paste & split"), ("s", "Split my text"),
+                 ("m", "Way: " + self.box_mode), ("e", "Edit a box"), ("x", "Remove a box"),
+                 ("r", "Start over")]
+        if self.box_mode == "spot":
+            items.append(("o", "Set the spots"))
+        if self.box_mode == "word":
+            items += [("w", "Pick a .docx"), ("k", "Change cells")]
+        k = self.screen("boxes", self.box_lines(), f"BOXES · {len(self.boxes)} · {done} done", items,
+                        "boxes", "getting to each box: " + BOX_MODE_NAMES[self.box_mode], height=8)
+        if k in GLOBAL.values():
+            return k
+        if k in ("p", "s"):
+            text = self.read_block() if k == "p" else self.text
+            parts = self.ht.split_paragraphs(text)
+            self.boxes = [{"text": t, "done": False, "spot": None, "cell": None} for t in parts]
+            self.fill_cells()
+            self.tell(f"Split into {len(parts)} box{'' if len(parts) == 1 else 'es'}.", "green")
+        elif k == "e":
+            n = self.ask("Which box?")
+            if n.isdigit() and 1 <= int(n) <= len(self.boxes):
+                new = self.read_block(f"New text for box {n}")
+                if new.strip():
+                    self.boxes[int(n) - 1]["text"] = new
+        elif k == "x":
+            n = self.ask("Remove which box?")
+            if n.isdigit() and 1 <= int(n) <= len(self.boxes):
+                del self.boxes[int(n) - 1]
+        elif k == "r":
+            for b in self.boxes:
+                b["done"] = False
+        elif k == "m":
+            self.box_mode = BOX_MODES[(BOX_MODES.index(self.box_mode) + 1) % len(BOX_MODES)]
+            self.tell("Getting to each box: " + BOX_MODE_NAMES[self.box_mode] + ".", "green")
+            if self.box_mode == "spot" and self.boxes and not any(b["spot"] for b in self.boxes):
+                self.tell("Press o to point at each box's spot.", "accent")
+            if self.box_mode == "word" and not self.doc:
+                self.tell("Press w to pick your .docx.", "accent")
+        elif k == "o":
+            self.set_spots()
+        elif k == "w":
+            self.connect_doc()
+        elif k == "k":
+            self.pick_cells()
+        elif k == "enter":
+            self.type_boxes()
+        return None
 
     def set_spots(self):
         t = self.make_typist()
         if t is None or not self.boxes:
             return
-        self.note("For each box: point the mouse at the place it should be typed (don't click), then come back "
-                  "and press Enter. Don't move the window or scroll afterwards.", "accent")
+        self.note("For each box: point the mouse at where it should be typed (don't click), then press Enter here. "
+                  "Don't move the window or scroll afterwards.", "accent")
         for i, b in enumerate(self.boxes, 1):
             self.read(f"  Box {i}: point at its spot, then press Enter ")
             try:
                 b["spot"] = tuple(int(v) for v in t.mouse.position)
             except Exception as exc:
-                self.note(f"Couldn't read the mouse position: {exc}", "red")
+                self.tell(f"Couldn't read the mouse position: {exc}", "red")
                 return
-            self.note(f"Box {i} → {b['spot']}", "green")
+        self.tell(f"Spots set for {len(self.boxes)} boxes.", "green")
 
     def connect_doc(self):
-        path = self.ask("Drag your .docx file here (or type its path), then press Enter").strip().strip("'\"")
+        path = self.ask("Drag your .docx file here (or type its path)").strip().strip("'\"")
         if not path:
-            self.box_mode = "click"
             return
         try:
             cells = self.ht.read_word_cells(os.path.expanduser(path))
         except Exception as exc:
-            self.note(f"Couldn't read that document: {exc}", "red")
-            self.box_mode = "click"
-            self.pause()
+            self.tell(f"Couldn't read that document: {exc}", "red")
             return
         if not cells:
-            self.note("That document has no tables. Use [1] I click or [2] Spots instead.", "yellow")
-            self.box_mode = "click"
-            self.pause()
+            self.tell("That document has no tables. Use m to pick another way.", "yellow")
             return
         self.doc = {"path": os.path.abspath(os.path.expanduser(path)), "cells": cells}
+        self.box_mode = "word"
         self.fill_cells()
         try:
             self.ht.open_in_word(self.doc["path"])
         except Exception:
             pass
-        self.note(f"Connected: {len(cells)} cells. Each box goes into the next empty cell; [w] changes them.", "green")
-        self.pause()
+        self.tell(f"Connected: {len(cells)} cells. Each box goes into the next empty cell; k changes them.", "green")
 
     def fill_cells(self):
         if not self.doc:
@@ -1007,6 +1099,7 @@ class CLI:
 
     def pick_cells(self):
         if not self.doc:
+            self.tell("Pick a .docx first (w).", "yellow")
             return
         for n, c in enumerate(self.doc["cells"], 1):
             self.say(f"   {self.p(str(n).rjust(3), 'accent')}  {c['label']}")
@@ -1020,19 +1113,15 @@ class CLI:
     def type_boxes(self):
         todo = [b for b in self.boxes if b["text"].strip() and not b["done"]]
         if not todo:
-            self.note("Nothing to type: add boxes with [p], or [r] to start over.", "yellow")
-            self.pause()
+            self.tell("Nothing to type: p adds boxes, r starts over.", "yellow")
             return
         if self.s["background"] and self.box_mode != "word":
-            self.note("Background typing only works with Word cells. Turn it off in Settings for the other ways.",
-                      "yellow")
-            self.pause()
+            self.tell("Background typing only works with Word cells. Turn it off with g on 3 Type.", "yellow")
             return
         if self.box_mode == "click":
-            for i, b in enumerate(todo, 1):
-                self.say("")
-                self.note(f"Box {self.boxes.index(b) + 1} of {len(self.boxes)}: press Enter, then click into its spot.",
-                          "accent")
+            for b in todo:
+                n = self.boxes.index(b) + 1
+                self.note(f"Box {n} of {len(self.boxes)}: press Enter, then click into its spot.", "accent")
                 if self.keys:
                     self.out.write(f"  {self.p('›', 'accent', 'bold')} " + self.p("Enter = go · Esc = stop ", "grey"))
                     self.out.flush()
@@ -1040,23 +1129,21 @@ class CLI:
                     self.say("")
                 else:
                     stop = self.ask("Enter = go, s = stop").lower().startswith("s")
-                if stop:
-                    return
-                if not self.type_text(b["text"], label=f"Box {self.boxes.index(b) + 1}"):
+                if stop or not self.type_text(b["text"], label=f"Box {n}"):
                     return
                 b["done"] = True
+            self.tell("Every box is done.", "green")
             return
         if self.box_mode == "tab":
-            texts = [b["text"].replace("\t", " ") for b in todo]
             self.note("Click into the first cell of the table during the countdown.", "accent")
-            if self.type_text("\t".join(texts)):
+            if self.type_text("\t".join(b["text"].replace("\t", " ") for b in todo)):
                 for b in todo:
                     b["done"] = True
             return
-        plan, jumps, texts = [], {}, []
         t = self.make_typist()
         if t is None:
             return
+        plan, jumps, texts = [], {}, []
         for b in todo:
             text = b["text"]
             if self.box_mode == "spot":
@@ -1078,264 +1165,191 @@ class CLI:
             plan += self.plan(text)
             texts.append(text)
         if not texts:
-            self.note("No box has a spot / cell yet.", "yellow")
-            self.pause()
+            self.tell("No box has a " + ("spot (press o)" if self.box_mode == "spot" else "Word cell (press w)") +
+                      " yet.", "yellow")
             return
         self.note("Hands off the keyboard and mouse until it's done.", "accent")
         if self.type_text("".join(texts), plan=plan, jumps=jumps, countdown=3 if self.box_mode == "spot" else 2):
             for b in todo:
                 b["done"] = True
 
-    # ----- Text -----
-    def text_screen(self):
-        while True:
-            self.header()
-            self.rule("Text")
-            self.show_text(limit=14)
-            self.say("")
-            choice = self.menu([("p", "Paste / type", "replace it with new text"),
-                                ("v", "From clipboard", "use what you last copied"),
-                                ("o", "Open a file", ".txt or .docx"),
-                                ("c", "Copy", "copy the text to the clipboard"),
-                                ("x", "Clear", ""),
-                                ("b", "Back", "")])
-            if choice in ("b", ""):
-                return
-            if choice == "p":
-                new = self.read_block()
-                if new.strip():
-                    self.set_text(new)
-            elif choice == "v":
-                clip = clipboard_get()
-                if clip and clip.strip():
-                    self.set_text(clip.strip("\n"))
-                else:
-                    self.note("The clipboard is empty (or can't be read here). Use [p] and paste instead.", "yellow")
-                    self.pause()
-            elif choice == "o":
-                self.open_file()
-            elif choice == "c":
-                self.note("Copied." if self.text and clipboard_set(self.text) else "Couldn't copy here.",
-                          "green" if self.text else "yellow")
-                self.pause()
-            elif choice == "x":
-                self.set_text("")
-
-    def open_file(self):
-        path = os.path.expanduser(self.ask("Drag the file here (or type its path)").strip().strip("'\""))
-        if not path:
-            return
-        try:
-            if path.lower().endswith(".docx"):
-                import docx
-                text = "\n\n".join(p.text for p in docx.Document(path).paragraphs if p.text.strip())
-            else:
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    text = f.read()
-        except Exception as exc:
-            self.note(f"Couldn't open it: {exc}", "red")
-            self.pause()
-            return
-        self.set_text(text.strip("\n"))
-        self.note(f"Opened {os.path.basename(path)}: {len(text.split())} words.", "green")
-        self.pause()
-
-    # ----- Settings -----
+    # ----- 5 Settings -----
     def settings(self):
-        while True:
-            self.header(3)
-            self.rule("Settings")
-            s = self.s
-            on = lambda v: self.p("on", "green") if v else self.p("off", "grey")
-            rnd = f"{s['random'][0]}–{s['random'][1]} WPM" if s["random"] else "off"
-            choice = self.menu([
-                ("1", "Speed", f"{s['wpm']} WPM   (or 25, 40, 60, 90, 120)"),
-                ("2", "Random speed", rnd),
-                ("3", "Style", f"{self.style_name()}   (Careful · Natural · Messy)"),
-                ("4", "Rhythm", f"{s['variation']}   how uneven, 0-100"),
-                ("5", "Typos", f"{s['typos']:g} %   made and fixed, 0-8"),
-                ("6", "Pauses", f"{'on' if s['pauses'] else 'off'}   at commas, full stops, new lines"),
-                ("7", "Always wrong", f"{s['targets'] or '—'}   (fix them: {'yes' if s['fix_chosen'] else 'no'})"),
-                ("8", "Countdown", f"{s['delay']} s to click into your document"),
-                ("9", "Background", f"{'on' if s['background'] else 'off'}   Word only: keep using your computer"
-                                    + (f" (pin: {'on' if s['pin'] else 'off'})" if s["background"] else "")),
-                ("w", "After /use", f"humanise {on(s['wf_humanise'])} · fix mistakes {on(s['wf_fix'])}"),
-                ("b", "Back", ""),
-            ])
-            if choice in ("b", ""):
-                self.save()
-                return
-            if choice == "1":
-                v = self.ask("Words per minute (1-2000)", s["wpm"])
-                if v.isdigit() and 1 <= int(v) <= 2000:
-                    s["wpm"] = int(v)
-            elif choice == "2":
-                v = self.ask("Two speeds like 40-90, or 'off'", rnd if s["random"] else "off")
-                m = re.match(r"\s*(\d+)\s*[-–to ]+\s*(\d+)", v)
-                s["random"] = sorted([int(m.group(1)), int(m.group(2))]) if m else None
-            elif choice == "3":
-                v = self.ask("Careful, Natural or Messy", self.style_name()).strip().title()
-                if v in STYLES:
-                    s["variation"], s["typos"] = STYLES[v]
-                    s["pauses"] = True
-            elif choice == "4":
-                v = self.ask("Rhythm 0-100", s["variation"])
-                if v.isdigit() and 0 <= int(v) <= 100:
-                    s["variation"] = int(v)
-            elif choice == "5":
-                try:
-                    s["typos"] = round(max(0.0, min(8.0, float(self.ask("Typos % (0-8)", s["typos"])))), 1)
-                except ValueError:
-                    pass
-            elif choice == "6":
-                s["pauses"] = not s["pauses"]
-            elif choice == "7":
-                s["targets"] = self.ask("Words and letters to always get wrong, e.g. the, because, e", s["targets"])
-                s["fix_chosen"] = self.yes("Fix them after (like normal typos)?", s["fix_chosen"])
-            elif choice == "8":
-                v = self.ask("Seconds (1-60)", s["delay"])
-                if v.isdigit() and 1 <= int(v) <= 60:
-                    s["delay"] = int(v)
-            elif choice == "9":
-                s["background"] = self.yes("Type into Word in the background?", s["background"])
-                if s["background"]:
-                    s["pin"] = self.yes("Pin it to one spot in Word?", s["pin"])
-            elif choice == "w":
-                s["wf_humanise"] = self.yes("After /use: humanise it?", s["wf_humanise"])
-                s["wf_fix"] = self.yes("After /use: fix mistakes?", s["wf_fix"])
-            self.save()
+        s = self.s
+        on = lambda v: self.p("on", "green") if v else self.p("off", "grey")
+        rows = [("Speed", f"{s['wpm']} WPM"), ("Random speed", f"{s['random'][0]}–{s['random'][1]} WPM"
+                                                if s["random"] else "off"),
+                ("Style", self.style_name()), ("Rhythm", f"{s['variation']}  (how uneven, 0-100)"),
+                ("Typos", f"{s['typos']:g} %  (made and fixed)"), ("Pauses", on(s["pauses"])),
+                ("Always wrong", (s["targets"] or "—") + (f"  (fixed: {'yes' if s['fix_chosen'] else 'no'})"
+                                                         if s["targets"] else "")),
+                ("Countdown", f"{s['delay']} s"),
+                ("Background", on(s["background"]) + (f"  (pin: {'on' if s['pin'] else 'off'})" if s["background"]
+                                                      else "")),
+                ("After /use", f"humanise {on(s['wf_humanise'])} · fix {on(s['wf_fix'])}")]
+        lines = [self.p(name.ljust(14), "grey") + value for name, value in rows]
+        k = self.screen("settings", lines, "SETTINGS · saved for next time", [
+            ("w", "Speed"), ("r", "Random speed"), ("y", "Style"),
+            ("h", "Rhythm"), ("t", "Typos"), ("p", "Pauses"),
+            ("a", "Always wrong"), ("d", "Countdown"), ("g", "Background"),
+            ("u", "After /use")], "settings", "pick one to change it", height=10)
+        if k in GLOBAL.values():
+            return k
+        if k == "w":
+            v = self.ask("Words per minute (1-2000; 25 slow · 40 average · 60 good · 90 fast · 120 pro)", s["wpm"])
+            if v.isdigit() and 1 <= int(v) <= 2000:
+                s["wpm"] = int(v)
+        elif k == "r":
+            v = self.ask("Two speeds like 40-90, or 'off'", "off")
+            m = re.match(r"\s*(\d+)\s*[-–to ]+\s*(\d+)", v)
+            s["random"] = sorted([int(m.group(1)), int(m.group(2))]) if m else None
+        elif k == "y":
+            v = self.ask("Careful, Natural or Messy", self.style_name()).strip().title()
+            if v in STYLES:
+                s["variation"], s["typos"] = STYLES[v]
+                s["pauses"] = True
+        elif k == "h":
+            v = self.ask("Rhythm 0-100", s["variation"])
+            if v.isdigit() and 0 <= int(v) <= 100:
+                s["variation"] = int(v)
+        elif k == "t":
+            try:
+                s["typos"] = round(max(0.0, min(8.0, float(self.ask("Typos % (0-8)", s["typos"])))), 1)
+            except ValueError:
+                pass
+        elif k == "p":
+            s["pauses"] = not s["pauses"]
+        elif k == "a":
+            s["targets"] = self.ask("Words and letters to always get wrong, e.g. the, because, e", s["targets"])
+            s["fix_chosen"] = self.yes("Fix them after (like normal typos)?", s["fix_chosen"])
+        elif k == "d":
+            v = self.ask("Seconds (1-60)", s["delay"])
+            if v.isdigit() and 1 <= int(v) <= 60:
+                s["delay"] = int(v)
+        elif k == "g":
+            s["background"] = self.yes("Type into Word in the background?", s["background"])
+            if s["background"]:
+                s["pin"] = self.yes("Pin it to one spot in Word?", s["pin"])
+        elif k == "u":
+            s["wf_humanise"] = self.yes("After /use: humanise it?", s["wf_humanise"])
+            s["wf_fix"] = self.yes("After /use: fix mistakes?", s["wf_fix"])
+        self.save()
+        return None
 
     # ----- 6 Connect -----
     def connect(self):
         ht = self.ht
-        while True:
-            self.header()
-            self.rule("Connect Claude")
-            names = {"account": "My Claude account", "claude": "A Claude API key", "local": "A local AI"}
-            self.note("Using: " + self.p(names[self.engine], "bold"), "accent")
-            if self._account is None:
-                self._account = ht.claude_account_status()
-            acct = self._account
-            self.say("")
-            self.say(f"   {self.p('[1]', 'accent', 'bold')} {'My Claude account':<20}" +
-                     self.p("recommended · your Pro/Max plan · no API key", "grey"))
-            self.say("       " + self.p(acct["text"], "green" if acct.get("logged_in") else "yellow"))
-            self.say(f"       {self.p('[i]', 'accent')} install Claude Code   {self.p('[l]', 'accent')} log in")
-            self.say(f"   {self.p('[2]', 'accent', 'bold')} {'A Claude API key':<20}" +
-                     self.p("pay per use · " + ("key saved ✓" if self.key() else "no key yet"), "grey"))
-            self.say(f"       {self.p('[k]', 'accent')} add or change the key")
-            self.say(f"   {self.p('[3]', 'accent', 'bold')} {'A local AI':<20}" +
-                     self.p(f"free, offline (Ollama) · model: {self.model or 'none'}", "grey"))
-            self.say(f"       {self.p('[m]', 'accent')} pick a model")
-            self.say("")
-            try:
-                with open(ht.claude_config_path(), encoding="utf-8") as fh:
-                    linked = "human-typer" in (json.load(fh).get("mcpServers") or {})
-            except Exception:
-                linked = False
-            self.say(f"   {self.p('[a]', 'accent', 'bold')} {'Claude app':<20}" +
-                     self.p("let the Claude desktop app type with Human Typer · " +
-                            ("connected ✓" if linked else "not connected"), "grey"))
-            self.say(f"       {self.p('[d]', 'accent')} disconnect it")
-            self.say(f"   {self.p('[r]', 'accent', 'bold')} Check again")
-            self.say(f"   {self.p('[b]', 'accent', 'bold')} Back")
-            choice = self.pick("123ilkmadrb")
-            if choice == "r":
+        if self._account is None:
+            self._account = ht.claude_account_status()
+        acct = self._account
+        try:
+            with open(ht.claude_config_path(), encoding="utf-8") as fh:
+                linked = "human-typer" in (json.load(fh).get("mcpServers") or {})
+        except Exception:
+            linked = False
+        use = lambda e: self.p("● ", "accent") if self.engine == e else self.p("○ ", "grey")
+        lines = [
+            use("account") + self.p("My Claude account", "bold") + self.p("   recommended · your Pro/Max plan", "grey"),
+            "    " + self.p(acct["text"], "green" if acct.get("logged_in") else "yellow"),
+            use("claude") + self.p("A Claude API key", "bold") + self.p("    pay per use · ", "grey") +
+            (self.p("key saved ✓", "green") if self.key() else self.p("no key yet", "grey")),
+            use("local") + self.p("A local AI", "bold") + self.p(f"          free, offline · model: {self.model or 'none'}",
+                                                                 "grey"),
+            "",
+            self.p("Claude app", "bold") + self.p("          types from the Claude desktop app · ", "grey") +
+            (self.p("connected ✓", "green") if linked else self.p("not connected", "grey")),
+        ]
+        k = self.screen("connect", lines, "CONNECT CLAUDE", [
+            ("a", "Use my account"), ("i", "Install Claude Code"), ("l", "Log in"),
+            ("k", "Use an API key"), ("m", "Use a local AI"), ("r", "Check again"),
+            ("c", "Connect Claude app"), ("d", "Disconnect it")], "connect", "● = the one in use", height=6)
+        if k in GLOBAL.values():
+            self.save()
+            return k
+        if k == "a":
+            self.engine, self.session = "account", None
+        elif k == "r":
+            self._account = None
+        elif k == "i":
+            cmd = ht.CLAUDE_INSTALL["win" if sys.platform == "win32" else "unix"]
+            self.note("This runs Anthropic's installer for Claude Code here:  " + cmd, "accent")
+            if self.yes("Run it now?"):
+                run = (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
+                       if sys.platform == "win32" else ["bash", "-c", cmd])
+                subprocess.run(run)
                 self._account = None
-                continue
-            if choice in ("b", ""):
-                self.save()
-                return
-            if choice in ("1", "2", "3"):
-                self.engine = {"1": "account", "2": "claude", "3": "local"}[choice]
-                self.session = None
-            elif choice == "i":
-                cmd = ht.CLAUDE_INSTALL["win" if sys.platform == "win32" else "unix"]
-                self.note("This runs Anthropic's installer for Claude Code here:", "accent")
-                self.say("     " + self.p(cmd, "bold"))
-                if self.yes("Run it now?"):
-                    run = (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd]
-                           if sys.platform == "win32" else ["bash", "-c", cmd])
-                    subprocess.run(run)
-                    self._account = None
-                    self.engine = "account"
-                    self.note("Now press [l] to log in.", "accent")
-                    self.pause()
-            elif choice == "l":
-                exe = ht.find_claude_cli()
-                if not exe:
-                    self.note("Install Claude Code first ([i]).", "yellow")
-                    self.pause()
-                    continue
+                self.engine = "account"
+                self.tell("Installed. Now press l to log in.", "accent")
+        elif k == "l":
+            exe = ht.find_claude_cli()
+            if not exe:
+                self.tell("Install Claude Code first (i).", "yellow")
+            else:
                 self.note("Log in with your Claude account in the browser that opens, then come back here.", "accent")
                 subprocess.run([exe, "auth", "login"], env=ht._claude_env(exe))
                 self._account = None
                 self.engine = "account"
-            elif choice == "k":
+        elif k == "k":
+            if not self.key() or self.yes("Change the saved key?", False):
                 key = self.secret("Paste your Claude API key (sk-ant-…), or leave blank to remove it:").strip()
                 cfg = ht.load_config()
                 if key:
                     cfg["claude_api_key"] = key
-                    self.engine = "claude"
                 else:
                     cfg.pop("claude_api_key", None)
                 ht.save_config(cfg)
-                self.note("Key saved (only on this computer)." if key else "Key removed.", "green")
-                self.pause()
-            elif choice == "m":
-                try:
-                    models = ht.ollama_models()
-                except Exception as exc:
-                    self.note(str(exc).replace("\n\n", " ").replace("\n", " "), "red")
-                    self.pause()
-                    continue
-                if not models:
-                    self.note("Ollama has no models yet. In a terminal run:  ollama pull llama3.2", "yellow")
-                    self.pause()
-                    continue
-                for n, m in enumerate(models, 1):
-                    self.say(f"   {self.p(f'[{n}]', 'accent')} {m}")
+                self.tell("Key saved (only on this computer)." if key else "Key removed.", "green")
+            if self.key():
+                self.engine, self.session = "claude", None
+        elif k == "m":
+            try:
+                models = ht.ollama_models()
+            except Exception as exc:
+                self.tell(str(exc).replace("\n\n", " ").replace("\n", " "), "red")
+                models = None
+            if models == []:
+                self.tell("Ollama has no models yet. In a terminal run:  ollama pull llama3.2", "yellow")
+            elif models:
+                self.say("  " + "   ".join(f"{self.p(str(n), 'accent')} {m}" for n, m in enumerate(models, 1)))
                 a = self.ask("Model", (models.index(self.model) + 1) if self.model in models else 1)
                 if a.isdigit() and 1 <= int(a) <= len(models):
                     self.model = models[int(a) - 1]
-                    self.engine = "local"
-            elif choice in ("a", "d"):
-                try:
-                    path = ht.connect_claude(remove=choice == "d")
-                    self.note(("Disconnected." if choice == "d" else "Connected!") + " Quit the Claude app completely "
-                              "and open it again." + ("" if choice == "d" else " Then say: “type it with Human "
-                                                      "Typer at 60 WPM”."), "green")
-                    self.note(f"(Settings file: {path})")
-                except Exception as exc:
-                    self.note(f"Couldn't update the Claude app's settings: {exc}", "red")
-                self.pause()
-            self.save()
+                    self.engine, self.session = "local", None
+        elif k in ("c", "d"):
+            try:
+                path = ht.connect_claude(remove=k == "d")
+                self.tell(("Disconnected." if k == "d" else "Connected!") + " Quit the Claude app completely and open "
+                          "it again." + ("" if k == "d" else " Then say: “type it with Human Typer at 60 "
+                                                             "WPM”."), "green")
+                self.tell(f"(Settings file: {path})")
+            except Exception as exc:
+                self.tell(f"Couldn't update the Claude app's settings: {exc}", "red")
+        self.save()
+        return None
 
-    # ----- Help -----
+    # ----- ? Help -----
     def help(self):
-        self.header()
-        self.rule("How it works")
         steps = [
-            ("1 Write", "Chat with Claude: ask for what you need. Type /use to send the answer on: it's humanised, "
-                        "checked, and ready to type. First time? [6] Connect (two steps, about a minute)."),
-            ("2 Polish", "Humanise makes it sound natural for who's reading it. Check finds mistakes (pick a level). "
-                         "AI check shows habits that look like AI writing. APA tidies references."),
-            ("3 Type", "Press Enter, then click into your document before the countdown ends. Hands off the keyboard "
-                       "and mouse while it types."),
-            ("4 Boxes", "Worksheets and tables: one paragraph per box. Click each box yourself, let it click spots "
-                        "you point at, press Tab through a Word table, or pick Word cells from a .docx."),
-            ("To stop", "Ctrl+C here, or push the mouse into the top-left corner of the screen" +
-                        ("." if sys.platform == "darwin" else ", or press Esc. F8 pauses.")),
-            ("Look real", "Settings → Style: Careful, Natural or Messy. It types in bursts, slows for hard reaches, "
-                          "and makes the mistakes people make, then fixes them. The finished text is always right."),
+            ("1 Write", "Chat with Claude. /use sends the answer on: humanised, checked, ready on 3 Type."),
+            ("2 Polish", "h humanise · c check · f fix · i AI check · r/m APA. u undoes."),
+            ("3 Type", "Enter starts; click into your document during the countdown. + − speed, y style."),
+            ("4 Boxes", "One paragraph per box: click each, auto-click spots, Tab through a table, Word cells."),
+            ("5 Settings", "Speed, style, typos, countdown, background. Saved for next time."),
+            ("6 Connect", "Your Claude account (install + log in, about a minute), an API key, or a local AI."),
+            ("Keys", "1-6 jump anywhere · Esc home · q quit · Ctrl+C stops a reply, a rewrite or typing."),
+            ("Stop typing", "Ctrl+C, or the mouse to the top-left corner of the screen" +
+                            ("." if sys.platform == "darwin" else ", or Esc. F8 pauses.")),
+            ("Look real", "Careful, Natural or Messy: bursts, slow reaches, real mistakes it fixes. "
+                          "The finished text is always right."),
         ]
+        lines = []
         for title, body in steps:
-            self.say("")
-            self.say("  " + self.p(title, "accent", "bold"))
-            for line in textwrap.wrap(body, self.width - 6):
-                self.say("    " + line)
-        self.say("")
-        self.pause()
+            wrapped = textwrap.wrap(body, self.width - 22)
+            lines.append(self.p(title.ljust(13), "accent", "bold") + wrapped[0])
+            lines += [" " * 13 + more for more in wrapped[1:]]
+        k = self.screen("help", lines, "HOW IT WORKS", [("enter", "Home")], "help",
+                        "quick commands: human_typer_cli.py --help", height=len(lines))
+        return "home" if k == "enter" else k
 
 
 COMMANDS = {
@@ -1440,12 +1454,16 @@ def quick(app, args):
             print(text)
             return 0
         app.say("\n")
-        app.chat = [{"role": "user", "content": request}, {"role": "assistant", "content": text}]
         app.s["wf_humanise"] = not args.no_humanise
         app.s["wf_fix"] = True
-        if args.yes:
-            app.yes = lambda *a, **k: True
-        app.workflow()
+        ok = app.workflow(text)
+        app.flush_msg()
+        if not ok:
+            return 1
+        if args.yes or app.yes("Type it now?"):
+            ok = app.type_text(app.text)
+            app.flush_msg()
+            return 0 if ok else 1
         return 0
 
     text = source()
@@ -1453,17 +1471,20 @@ def quick(app, args):
         return fail(f"there's no text to {cmd}. Give a file, or pipe text in with -")
     if cmd == "type":
         app.text = text
-        return 0 if app.type_text(text) else 1
+        ok = app.type_text(text)
+        app.flush_msg()
+        return 0 if ok else 1
     if cmd == "fix":
         print(app.fix(text)[0])
         return 0
     if cmd == "check":
         app.text = text
-        app.yes = lambda *a, **k: False
         app.check()
+        app.flush_msg()
         return 0
     if cmd == "humanise":
         new = app.humanise(text) if sys.stdout.isatty() else None
+        app.flush_msg()
         if not sys.stdout.isatty():                  # piped: print only the result
             problem = app.ai_problem()
             if problem:
@@ -1478,6 +1499,7 @@ def quick(app, args):
     if cmd == "ai-check":
         app.text = text
         app.ai_check()
+        app.flush_msg()
         return 0
     return 2
 
@@ -1498,7 +1520,6 @@ def main(ht=None, argv=None):
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     app = CLI(ht, colour=False if args.no_color else None, keys=getkey if interactive else None)
     if args.command:
-        app.pause = lambda: None          # no "press a key" stops in one-line commands
         try:
             sys.exit(quick(app, args))
         except KeyboardInterrupt:

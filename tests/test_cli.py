@@ -100,68 +100,86 @@ def run_cli(keys, presses=None, **kw):
 
 
 class Menus(unittest.TestCase):
+    """The workspace: tab bar, panel, actions, result. 1-6 jump anywhere, Esc goes home, q quits."""
+
     def setUp(self):
         ht.save_config({})
         self._old = ht.mac_permission_problem
         ht.mac_permission_problem = lambda: None
         self.addCleanup(lambda: setattr(ht, "mac_permission_problem", self._old))
 
-    def test_main_menu_and_quit(self):
+    def test_layout_and_quit(self):
         app, out = run_cli(["q"])
-        for word in ("WORKFLOW", "[1] Write", "[2] Polish", "[3] Type", "[4] Boxes", "[6] Connect", "Bye"):
-            self.assertIn(word, out)
+        for part in ("HUMAN TYPER", "1 Write", "2 Polish", "3 Type", "4 Boxes",
+                     "5 Settings", "6 Connect", "TEXT", "HOME", "1-6 jump", "Bye"):
+            self.assertIn(part, out)
+
+    def test_jump_anywhere_and_esc_home(self):
+        app, out = run_cli(["3", "5", "?", "esc", "2", "q"])
+        for title in ("TYPE", "SETTINGS", "HOW IT WORKS", "HOME", "POLISH"):
+            self.assertIn(title, out)
 
     def test_help(self):
-        _, out = run_cli(["?", "", "q"])
-        self.assertIn("How it works", out)
+        _, out = run_cli(["?", "q"])
+        self.assertIn("HOW IT WORKS", out)
         self.assertIn("Careful, Natural or Messy", out)
 
-    def test_paste_text(self):
-        app, out = run_cli(["t", "p", "Hello there.", "Second line.", ".", "b", "q"])
-        self.assertEqual(app.text, "Hello there.\nSecond line.")
+    def test_paste_text_and_result_area(self):
+        app, out = run_cli(["e", "Hello there.", "Second line.", ".", "x", "q"])
+        self.assertEqual(app.undo[-1], "Hello there.\nSecond line.")
         self.assertIn("4 words", out)
+        self.assertIn("result", out)
+        self.assertIn("Cleared", out)
 
     def test_settings_are_saved(self):
-        run_cli(["5", "1", "90", "3", "Messy", "2", "40-80", "8", "3", "b", "q"])
+        run_cli(["5", "w", "90", "y", "Messy", "r", "40-80", "d", "3", "p", "q"])
         s = ht.load_config()["cli"]
-        self.assertEqual((s["wpm"], s["variation"], s["typos"], s["random"], s["delay"]), (90, 60, 4.0, [40, 80], 3))
+        self.assertEqual((s["wpm"], s["variation"], s["typos"], s["random"], s["delay"], s["pauses"]),
+                         (90, 60, 4.0, [40, 80], 3, False))
         app, out = run_cli(["q"])
-        self.assertIn("Messy", out)                     # remembered next time
+        self.assertIn("Messy", out)                     # remembered next time, shown in the title bar
         self.assertIn("40–80 WPM", out)
 
-    def test_polish_check_and_fix_and_undo(self):
+    def test_type_screen_quick_keys(self):
+        app, _ = run_cli(["3", "+", "+", "-", "y", "q"])
+        self.assertEqual(app.s["wpm"], 70)
+        self.assertEqual(app.style_name(), "Messy")      # Natural -> Messy
+
+    def test_polish_check_fix_undo(self):
         text = "i went to teh shop and we was tired"
-        app, out = run_cli(["2", "l", "4", "c", "y", "", "b", "q"], text=text)
-        self.assertIn("teh", out)
+        app, out = run_cli(["2", "l", "4", "c", "f", "q"], text=text)
+        self.assertIn("[teh]", out)
+        self.assertIn("f fixes them all", out)
         self.assertEqual(app.text, "I went to the shop and we were tired.")
-        app, _ = run_cli(["2", "f", "", "u", "", "b", "q"], text=text)
-        self.assertEqual(app.text, text, "undo puts it back")
+        app, _ = run_cli(["2", "f", "u", "q"], text=text)
+        self.assertEqual(app.text, text, "u puts it back")
 
     def test_ai_check_and_apa(self):
         text = ("Furthermore, it is important to note that technology plays a crucial role in reshaping the "
                 "landscape, paving the way for innovation (smith 2020). In conclusion, it remains essential.")
-        app, out = run_cli(["2", "i", "", "r", "", "m", "n", "John Smith", "2020", "Plants", "n", "BBC",
-                            "https://bbc.com", "", "b", "q"], text=text)
+        app, out = run_cli(["2", "i", "r", "m", "n", "John Smith", "2020", "Plants", "n", "BBC",
+                            "https://bbc.com", "q"], text=text)
         self.assertIn("AI-style score", out)
         self.assertIn("(Smith, 2020)", app.text)
         self.assertIn("Smith, J. (2020)", out)
 
     def test_type(self):
-        app, out = run_cli(["3", "", "", "q"], text="Hello there, typing test!")
+        app, out = run_cli(["3", "", "q"], text="Hello there, typing test!")
         self.assertEqual("".join(FakeTypist.last.typed), "Hello there, typing test!")
         self.assertIn("Finished", out)
 
     def test_boxes_by_tab_and_by_spots(self):
-        app, out = run_cli(["4", "p", "First answer.", "", "Second answer.", ".", "3", "", "", "b", "q"])
+        app, out = run_cli(["4", "p", "First answer.", "", "Second answer.", ".", "m", "m", "", "q"])
+        self.assertEqual(app.box_mode, "tab")
         self.assertEqual("".join(FakeTypist.last.typed), "First answer.\tSecond answer.")
         self.assertTrue(all(b["done"] for b in app.boxes))
-        app, out = run_cli(["4", "p", "One.", "", "Two.", ".", "2", "", "", "", "", "b", "q"])
+        app, out = run_cli(["4", "p", "One.", "", "Two.", ".", "m", "o", "", "", "", "q"])
         self.assertEqual("".join(FakeTypist.last.typed), "One.Two.")
         self.assertEqual(FakeTypist.last.jumps_run, 2, "clicked each spot")
         self.assertEqual(app.boxes[0]["spot"], (120, 340))
 
     def test_write_and_workflow(self):
-        """Chat with (a pretend) Claude, then /use: humanise, fix, type."""
+        """Chat with (a pretend) Claude, then /use: humanise, fix, and it's on Type, ready."""
         replies = iter(["Here is teh email.", "Hi Sam, could i have Friday off?"])
 
         def fake(prompt, system, on_text, stop, session=None, keep=False):
@@ -172,30 +190,31 @@ class Menus(unittest.TestCase):
         ht.claude_account_stream, ht.find_claude_cli = fake, lambda: "/fake/claude"
         try:
             ht.save_config({"cli": {"check_level": 4}})
-            app, out = run_cli(["1", "Write an email asking for Friday off", "/use", "y", "", "", "q"],
-                               engine="account")
+            app, out = run_cli(["1", "Write an email asking for Friday off", "/use", "", "q"], engine="account")
         finally:
             ht.claude_account_stream, ht.find_claude_cli = old
         self.assertIn("claude › Here is teh email.", out)
         self.assertEqual(app.session, "s1")
         self.assertEqual(app.text, "Hi Sam, could I have Friday off?")
-        self.assertEqual("".join(FakeTypist.last.typed), app.text)
+        self.assertIn("Ready to type", out)
+        self.assertEqual("".join(FakeTypist.last.typed), app.text, "Enter on Type typed it")
 
-    def test_write_without_claude_offers_connect(self):
+    def test_write_without_claude_points_to_connect(self):
         old = ht.find_claude_cli
         ht.find_claude_cli = lambda: None
         try:
-            app, out = run_cli(["1", "n", "q"], engine="account")
+            app, out = run_cli(["1", "", "q"], engine="account")
         finally:
             ht.find_claude_cli = old
         self.assertIn("isn't connected", out)
+        self.assertIn("CONNECT CLAUDE", out, "Enter went to Connect")
 
     def test_connect_api_key_and_claude_app(self):
         path = os.path.join(_HOME, "claude_desktop_config.json")
         old = ht.claude_config_path
         ht.claude_config_path = lambda: path
         try:
-            app, out = run_cli(["6", "k", "", "a", "", "b", "q"], secret="sk-ant-test")
+            app, out = run_cli(["6", "k", "c", "q"], secret="sk-ant-test")
         finally:
             ht.claude_config_path = old
         self.assertEqual(ht.load_config()["claude_api_key"], "sk-ant-test")
@@ -206,23 +225,24 @@ class Menus(unittest.TestCase):
         _, out = run_cli(["q"])
         self.assertNotIn("\033[", out)
 
-
-    def test_one_keypress_menus(self):
-        """On a real terminal a single key picks: no Enter. Esc goes back, Enter does the main thing."""
-        app, out = run_cli([], presses=["5", "6", "esc", "3", "", "x", "q"], text="Hi there.")
-        self.assertFalse(ht.load_config()["cli"]["pauses"], "settings: [6] toggled pauses with one key")
-        self.assertIn("press a key", out)
+    def test_one_keypress(self):
+        """On a real terminal a single key picks: no Enter. Esc goes home, Enter does the main thing."""
+        app, out = run_cli([], presses=["5", "p", "esc", "3", "", "q"], text="Hi there.")
+        self.assertFalse(app.s["pauses"], "settings: p toggled pauses with one key")
         self.assertEqual("".join(FakeTypist.last.typed), "Hi there.", "Enter on Type started typing")
 
     def test_yes_no_is_one_key(self):
-        """Polish → Check → y fixes them, with single keys (the level is typed: it's a number)."""
-        app, out = run_cli(["4"], presses=["2", "l", "c", "y", "", "b", "q"], text="i went to teh shop and we was tired")
-        self.assertEqual(app.text, "I went to the shop and we were tired.")
+        ht.save_config({"claude_api_key": "sk-ant-old"})
+        app, out = run_cli([], presses=["6", "k", "y", "q"], secret="sk-ant-new")   # "Change the saved key?" y
         self.assertIn("yes", out)
+        self.assertEqual(ht.load_config()["claude_api_key"], "sk-ant-new")
 
 
 class QuickCommands(unittest.TestCase):
     """One-line commands with no menus: human_typer_cli.py fix notes.txt, and so on."""
+
+    def setUp(self):
+        ht.save_config({})
 
     def run_cmd(self, argv):
         out = io.StringIO()

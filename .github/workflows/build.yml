@@ -111,7 +111,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then CLI="dist/Human Typer CLI.exe"; ARG=""; else CLI="dist/Human Typer.app/Contents/MacOS/Human Typer"; ARG="--cli"; fi
           printf '?\n\nq\n' | "$CLI" $ARG > cli.txt
           cat cli.txt
-          grep -q "How it works" cli.txt && grep -q "Bye" cli.txt && echo "terminal version ok"
+          grep -q "HOW IT WORKS" cli.txt && grep -q "Bye" cli.txt && echo "terminal version ok"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,0 +1,68 @@
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write  2 Polish  3 Type  4 Boxes  │ 5 Settings  6 Connect  ? Help 
+  ╭─ TEXT ───────────────────────────────────────────────────────────────────╮
+  │ No text yet.                                                             │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  HOME  start at 1 Write, or bring in your own text ──────────────────────────
+   e Paste / type          v From clipboard        o Open a file
+   t See it all            c Copy                  x Clear
+   ⏎ Write with Claude
+  1-6 jump · ? help · Esc home · q quit
+  › e
+  › Paste or type your text. Finish with a line that's just a full stop ( .
+    ).
+  │ i went to teh shop and we was tired.
+  │ .
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write  2 Polish  3 Type  4 Boxes  │ 5 Settings  6 Connect  ? Help 
+  ╭─ TEXT · 9 words · about 7 s ─────────────────────────────────────────────╮
+  │ i went to teh shop and we was tired.                                     │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  HOME  next: 2 Polish or 3 Type ─────────────────────────────────────────────
+   e Paste / type          v From clipboard        o Open a file
+   t See it all            c Copy                  x Clear
+   ⏎ Type it
+  1-6 jump · ? help · Esc home · q quit
+  › 2
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write   2 Polish  3 Type  4 Boxes  │ 5 Settings  6 Connect  ? Help 
+  ╭─ TEXT · 9 words · about 7 s ─────────────────────────────────────────────╮
+  │ i went to teh shop and we was tired.                                     │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  POLISH  humanise for Team professional · as Keep Original · check level… ───
+   h Humanise              c Check mistakes        i AI check
+   a Audience/format       f Fix all               r APA citations
+   n Natural tone          l Level (3)             m APA reference
+   e Edit text             u Undo                  ⏎ Type it
+  1-6 jump · ? help · Esc home · q quit
+  › c
+
+   ⌨  HUMAN TYPER                              Claude ✓  ·  60 WPM  ·  Natural
+  1 Write   2 Polish  3 Type  4 Boxes  │ 5 Settings  6 Connect  ? Help 
+  ╭─ TEXT · 9 words · about 7 s ─────────────────────────────────────────────╮
+  │ i went to teh shop and we was tired.                                     │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  POLISH  humanise for Team professional · as Keep Original · check level… ───
+   h Humanise              c Check mistakes        i AI check
+   a Audience/format       f Fix all               r APA citations
+   n Natural tone          l Level (3)             m APA reference
+   e Edit text             u Undo                  ⏎ Type it
+  result ─────────────────────────────────────────────────────────────────────
+  i went to teh shop and we was tired.
+  
+   1  teh  →  the  (typo)
+   2  we was  →  we were  (grammar)
+  › 2 to look at. f fixes them all.
+  1-6 jump · ? help · Esc home · q quit
+  › 

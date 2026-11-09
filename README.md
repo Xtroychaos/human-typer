@@ -349,26 +349,44 @@ Prefer the keyboard? Human Typer also runs in a terminal, with everything the wi
 
 - **From the code:** `python human_typer_cli.py` (or `python human_typer.py --cli`).
 
-How to use it:
+How it's laid out: every screen is the same workspace, top to bottom:
 
-- Each screen has a short menu: press the letter or number in `[ ]`, with no Enter needed. **Esc** goes back,
-  and **Enter** does the main thing on the screen (like **Start typing** on Type). Yes/no questions are one key too
-  (**y** or **n**).
-- The text you're working on carries from step to step, like the tabs: **1 Write → 2 Polish → 3 Type**.
-- **Write:** type a message and press Enter. `/use` sends Claude's last answer on (humanised and checked, if those
-  are switched on in Settings) and offers to type it. `/paste` sends a long message over several lines, `/copy`
-  copies the answer, `/new` starts a new chat and `/back` goes back to the menu.
-- **Pasting text:** paste it (or type it), then type a line with just a full stop ( `.` ) and press Enter.
-  **Text → From clipboard** and **Open a file** (.txt or .docx) work too.
-- **Type** shows a countdown, then a progress bar that fills as it types:
+| Part | What's in it |
+| --- | --- |
+| **Title bar** | which AI it's using, the speed and the style |
+| **Tab bar** | `1 Write  2 Polish  3 Type  4 Boxes │ 5 Settings  6 Connect  ? Help` (the current one is highlighted) |
+| **Panel** | the text you're working on (or the chat, the boxes, the settings), always in the same place |
+| **Actions** | what this screen can do, one key each, in a grid |
+| **Result** | what the last action did (mistakes found, the AI score, "Fixed 2"…), until the next action |
+| **Footer** | the keys that work everywhere |
+
+Keys:
+
+- Press the key next to an action: no Enter needed. **Enter** does the main thing on the screen (⏎ in the grid,
+  like **Start typing** on Type). Yes/no questions are one key too (**y** or **n**).
+- **1–6** jump straight to any screen, from anywhere. **Esc** goes Home, **?** is Help, **q** quits.
+- **Ctrl+C** stops anything (a reply, a rewrite, typing). The mouse-corner stop works too, and on Windows **Esc**
+  stops and **F8** pauses while it types.
+
+The screens:
+
+- **Home:** the text. **e** paste or type it (finish with a line that's just a full stop), **v** from the clipboard,
+  **o** open a .txt or .docx, **t** see it all, **c** copy, **x** clear.
+- **1 Write:** chat with Claude. Type a message and press Enter. `/use` sends Claude's last answer on (humanised
+  and checked, if those are on in Settings) and goes to Type, ready. `/paste` sends a long message, `/copy` copies
+  the answer, `/new` starts a new chat, `/1`–`/6` jump. An empty line goes back.
+- **2 Polish:** **h** humanise, **a** audience and format, **c** check (mistakes highlighted and listed under the
+  actions), **f** fix all, **l** level, **i** AI check, **r** APA citations, **m** APA reference, **n** natural tone,
+  **u** undo.
+- **3 Type:** **Enter** starts. A countdown, then a progress bar that fills as it types. **+** / **−** change the
+  speed by 10, **y** steps through Careful → Natural → Messy, **d** countdown, **g** background (Word).
 
   ![Typing in the terminal](screenshot-cli-type.png)
 
-- **Stop:** **Ctrl+C** stops anything (a reply, a rewrite, typing) and goes back a step. The mouse-corner stop works
-  too, and on Windows **Esc** stops and **F8** pauses.
-- **Boxes:** **Spots** asks you to point the mouse at each box's place and press Enter, which is simpler than in the
-  window. **Word cells:** drag your .docx into the terminal window to give its path.
-- Settings are saved, so they're the same next time. The terminal and the window share the Claude connection.
+- **4 Boxes:** **p** paste and split, **m** changes how it gets to each box (I click → spots → Tab → Word cells),
+  **o** points at the spots (move the mouse there, press Enter), **w** picks a .docx and **k** changes its cells.
+- **5 Settings / 6 Connect:** everything else, saved for next time. Connect installs Claude Code and logs in right in
+  the terminal. The terminal and the window share the Claude connection.
 - Set `NO_COLOR=1` (or add `--no-color`) for plain text with no colours.
 
 ### Quick commands (no menus)
