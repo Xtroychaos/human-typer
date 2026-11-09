@@ -362,6 +362,9 @@ How it's laid out: every screen is the same workspace, top to bottom:
 
 Keys:
 
+- **Click** a tab or an action (Mac and Linux terminals), or press the key next to it: no Enter needed. On the
+  Settings and AI screens you can click a row in the list too. (While the app waits for a click, select text with
+  Option-drag on a Mac or Shift-drag on Linux.)
 - Press the key next to an action: no Enter needed. **Enter** does the main thing on the screen (⏎ in the grid,
   like **Start typing** on Type). Yes/no questions are one key too (**y** or **n**).
 - **1–6** jump straight to any screen, from anywhere. **Esc** goes Home, **?** is Help, **q** quits.
@@ -370,7 +373,12 @@ Keys:
 
 The screens:
 
-- **Home:** the text. **e** paste or type it (finish with a line that's just a full stop), **v** from the clipboard,
+- **The paste box** (e on Home, Polish or Type; p on Boxes; /paste in Write): paste or type, then press **Enter on two
+  empty lines** to finish (a line with just `.` or Ctrl+D works too). **Ctrl+C** (or Esc then Enter) cancels and
+  changes nothing.
+- **While Claude is working** it says "Claude is thinking…" until the words start, then writes them as they come.
+  **Ctrl+C** stops it; you're never stuck.
+- **Home:** the text. **e** paste or type it, **v** from the clipboard,
   **o** open a .txt or .docx, **t** see it all, **c** copy, **x** clear.
 - **1 Write:** chat with Claude. Type a message and press Enter. `/use` sends Claude's last answer on (humanised
   and checked, if those are on in Settings) and goes to Type, ready. `/paste` sends a long message, `/copy` copies

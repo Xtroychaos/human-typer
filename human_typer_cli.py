@@ -71,8 +71,12 @@ def visible_len(text):
 #  One keypress, no Enter (on a real terminal)
 # --------------------------------------------------------------------------- #
 
-def getkey():
+MOUSE_ON, MOUSE_OFF = "\033[?1000h\033[?1006h", "\033[?1000l\033[?1006l"
+
+
+def getkey(mouse=False):
     """Wait for one key. Returns it in lower case; "" for Enter and "esc" for Esc.
+    With mouse=True (Mac and Linux terminals) a click comes back as "click:<column>:<row>".
     Ctrl+C raises KeyboardInterrupt and Ctrl+D / Ctrl+Z raise EOFError, as usual.
     Arrow keys and other special keys are ignored."""
     while True:
@@ -90,13 +94,22 @@ def getkey():
             old = termios.tcgetattr(fd)
             try:
                 tty.setraw(fd)
+                if mouse:
+                    sys.stdout.write(MOUSE_ON)
+                    sys.stdout.flush()
                 data = os.read(fd, 4)
-                if data == b"\x1b":
-                    while select.select([fd], [], [], 0.02)[0]:   # an arrow key: swallow the rest
-                        data += os.read(fd, 8)
+                if data.startswith(b"\x1b"):
+                    while select.select([fd], [], [], 0.02)[0]:   # the rest of an arrow key or a click
+                        data += os.read(fd, 32)
             finally:
+                if mouse:
+                    sys.stdout.write(MOUSE_OFF)
+                    sys.stdout.flush()
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
             ch = data.decode("utf-8", "replace")
+            click = re.match(r"\x1b\[<0;(\d+);(\d+)M", ch)     # a left click (presses only)
+            if click:
+                return f"click:{click.group(1)}:{click.group(2)}"
             if ch.startswith("\x1b") and len(ch) > 1:
                 continue
         if ch == "\x03":
@@ -218,6 +231,9 @@ class CLI:
         self.ht = ht
         self.read_fn = read
         self.keys = keys               # one-keypress menus (None: type the choice and press Enter)
+        # Clicks work in Mac and Linux terminals when keys are read one at a time.
+        self.mouse = keys is getkey and sys.platform != "win32"
+        self.row, self.hot = 1, []     # where the cursor is, and what can be clicked
         self.out = out or sys.stdout
         self.secret_fn = secret
         self.p = Paint(colours_wanted(self.out) if colour is None else colour)
@@ -258,10 +274,25 @@ class CLI:
     def say(self, text="", end="\n"):
         self.out.write(text + end)
         self.out.flush()
+        self.row += (text + end).count("\n")
 
     def clear(self):
         if self.p.on:
             self.out.write("\033[2J\033[H")
+        self.row, self.hot = 1, []        # the screen starts again: nothing to click yet
+
+    def hotspot(self, col, width, key):
+        """Somewhere on the current line that can be clicked: columns col..col+width-1 mean key."""
+        self.hot.append((self.row, col, col + width - 1, key))
+
+    def clicked(self, x, y):
+        """The key for a click at column x, row y of the window (None if nothing's there)."""
+        lines = shutil.get_terminal_size((80, 24)).lines
+        y += max(0, self.row - lines)           # the screen scrolled if it's taller than the window
+        for row, c0, c1, key in self.hot:
+            if row == y and c0 <= x <= c1:
+                return key
+        return None
 
     def tell(self, text, kind="grey"):
         """Add a line to the result area (shown under the actions until the next action)."""
@@ -289,7 +320,7 @@ class CLI:
         fill = w - 2 - visible_len(head) - (1 if head else 0)
         self.say("  " + head + (" " if head else "") + self.p("─" * max(2, fill), "grey"))
 
-    def panel(self, lines, title, height=None):
+    def panel(self, lines, title, height=None, keys=None):
         """The workspace: a rounded box, always the same width. height pads it so the screen doesn't jump."""
         w = self.width - 2
         t = f" {title} "
@@ -298,9 +329,11 @@ class CLI:
         lines = list(lines)
         if height:                                  # at least a few rows, so short text still looks like a page
             lines += [""] * max(0, min(height, 3) - len(lines))
-        for line in lines:
+        for i, line in enumerate(lines):
             if visible_len(line) > w - 4:
                 line = line[:w - 5] + "…"
+            if keys and i < len(keys) and keys[i]:
+                self.hotspot(3, w, keys[i])            # click anywhere on this row
             self.say("  " + self.p("│", "grey") + " " + line + " " * max(0, w - 4 - visible_len(line)) + " " +
                      self.p("│", "grey"))
         self.say("  " + self.p("╰" + "─" * (w - 2) + "╯", "grey"))
@@ -319,10 +352,11 @@ class CLI:
                  self.p(self.status_speed(), "grey") + self.p("  ·  ", "grey") + self.p(self.style_name(), "grey"))
         self.say("")
         self.say("  " + title + " " * max(1, w - visible_len(title) - visible_len(right) - 2) + right)
-        tabs = []
+        tabs, col = [], 3
         for tab in TABS:
             if tab is None:
                 tabs.append(self.p("│", "grey"))
+                col += 2
                 continue
             key, name, screen = tab
             if not self.p.on:
@@ -331,6 +365,8 @@ class CLI:
                 tabs.append(self.p(f" {key} {name} ", "bold", "white", "accent_bg"))
             else:
                 tabs.append(self.p(key, "accent", "bold") + self.p(f" {name} ", "grey"))
+            self.hotspot(col, visible_len(tabs[-1]), key)
+            col += visible_len(tabs[-1]) + 1
         self.say("  " + " ".join(tabs))
 
     def actions(self, items, title, detail=""):
@@ -344,6 +380,7 @@ class CLI:
             for key, label in items[r:r + cols]:
                 k = "⏎" if key == "enter" else key
                 text = self.p(k.rjust(2), "accent", "bold") + " " + label
+                self.hotspot(3 + visible_len(row), visible_len(text), key)
                 row += text + " " * max(1, cell - visible_len(text))
             self.say("  " + row.rstrip())
 
@@ -351,12 +388,14 @@ class CLI:
         if self.msg:
             self.rule("result")
             self.flush_msg()
-        self.say("  " + self.p("1-6 jump · ? help · Esc home · q quit", "grey"))
+        tip = "click or press a key" if self.mouse else "press a key"
+        self.say("  " + self.p(f"{tip} · 1-6 jump · ? help · Esc home · q quit", "grey"))
 
-    def screen(self, where, panel_lines, panel_title, items, title, detail="", height=8):
-        """Draw a whole screen and read one choice. Returns a key, or the name of a screen to go to."""
+    def screen(self, where, panel_lines, panel_title, items, title, detail="", height=8, row_keys=None):
+        """Draw a whole screen and read one choice. Returns a key, or the name of a screen to go to.
+        row_keys: the key each panel row stands for, so clicking the row does it."""
         self.header(where)
-        self.panel(panel_lines, panel_title, height)
+        self.panel(panel_lines, panel_title, height, row_keys)
         self.actions(items, title, detail)
         self.footer()
         local = {i[0] for i in items if i}
@@ -369,7 +408,13 @@ class CLI:
             if self.keys:
                 self.out.write(prompt)
                 self.out.flush()
-                k = self.keys()
+                k = self.keys(mouse=True) if self.mouse else self.keys()
+                if k.startswith("click:"):
+                    _, x, y = k.split(":")
+                    k = self.clicked(int(x), int(y))
+                    if k is None:
+                        self.out.write("\r")      # a click on nothing: wait again on the same line
+                        continue
             else:
                 k = self.read(prompt).strip().lower()
             if k == "" and "enter" in local:
@@ -393,7 +438,11 @@ class CLI:
 
     def ask(self, label, default=None):
         hint = self.p(f" [{default}]", "grey") if default not in (None, "") else ""
-        answer = self.read(f"  {self.p('›', 'accent', 'bold')} {label}{hint} ").strip()
+        try:
+            answer = self.read(f"  {self.p('›', 'accent', 'bold')} {label}{hint} ").strip()
+        except EOFError:                          # Ctrl+D / Ctrl+Z: keep what it was
+            self.say("")
+            answer = ""
         return answer if answer else ("" if default is None else str(default))
 
     def yes(self, label, default=True):
@@ -416,16 +465,31 @@ class CLI:
         return getpass.getpass(f"  › {label} ")
 
     def read_block(self, label="Paste or type your text"):
-        self.note(label + ". Finish with a line that's just a full stop ( . ).", "accent")
-        lines = []
-        while True:
-            try:
-                line = self.read("  " + self.p("│ ", "grey"))
-            except EOFError:
-                break
-            if line.strip() == ".":
-                break
-            lines.append(line)
+        """A box to paste or type text into. Finish: press Enter on two empty lines (or type a
+        line that's just . ). Cancel: Ctrl+C (or Esc then Enter). Returns "" when cancelled."""
+        self.say("")
+        self.note(label + ".", "accent")
+        self.say("  " + self.p("  Enter on 2 empty lines (or a lone . ) finishes · Ctrl+C or Esc+Enter cancels",
+                                "grey"))
+        lines, empty = [], 0
+        try:
+            while True:
+                try:
+                    line = self.read("  " + self.p("│ ", "accent"))
+                except EOFError:                 # Ctrl+D / Ctrl+Z: finished
+                    break
+                if "\x1b" in line:               # Esc
+                    raise KeyboardInterrupt
+                if line.strip() == ".":
+                    break
+                empty = empty + 1 if not line.strip() else 0
+                if empty >= 2 or (empty and not lines):
+                    break                        # two empty lines (or Enter straight away) = done
+                lines.append(line)
+        except KeyboardInterrupt:
+            self.say("")
+            self.tell("Cancelled: nothing was changed.", "yellow")
+            return ""
         return "\n".join(lines).strip("\n")
 
     def pause(self):
@@ -527,25 +591,51 @@ class CLI:
         def work():
             try:
                 if engine == "account":
-                    text, sid = ht.claude_account_stream(messages[-1]["content"], system, on_text, stop,
+                    text, sid = ht.claude_account_stream(messages[-1]["content"], system, relay, stop,
                                                          session=session, keep=keep, model=claude_model)
                     result.update(text=text, session=sid)
                 elif engine == "claude":
-                    result["text"] = ht.claude_api_stream(system, messages, key, on_text, stop, model=claude_model)
+                    result["text"] = ht.claude_api_stream(system, messages, key, relay, stop, model=claude_model)
                 else:
-                    result["text"] = ht.ollama_stream(system, messages, model, on_text, stop)
+                    result["text"] = ht.ollama_stream(system, messages, model, relay, stop)
             except Exception as exc:
                 result["error"] = self.cli_words(str(exc).replace("\n\n", " ").replace("\n", " "))
 
+        spin = self.p.on                          # a real terminal: show it's working until the words come
+        lock, started = threading.Lock(), threading.Event()
+
+        def relay(piece):                        # the first words rub out "thinking…"
+            with lock:
+                if not started.is_set():
+                    started.set()
+                    if spin:
+                        self.out.write("\0338\033[K")
+                on_text(piece)
         thread = threading.Thread(target=work, daemon=True)
+        if spin:
+            self.out.write("\0337")                # remember where the words will start
         thread.start()
+        frames, n = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", 0
         try:
             while thread.is_alive():
+                if spin:
+                    with lock:
+                        if not started.is_set():
+                            self.out.write("\0338\033[K" + self.p(f"{frames[n % 10]} {self.ai_name()} is thinking…  "
+                                                                  "(Ctrl+C stops)", "grey"))
+                            self.out.flush()
+                    n += 1
                 thread.join(0.1)
         except KeyboardInterrupt:
             stop.set()
             thread.join(10)
             result["stopped"] = True
+        finally:
+            with lock:
+                if spin and not started.is_set():
+                    self.out.write("\0338\033[K")
+                    self.out.flush()
+                started.set()
         return result
 
     def humanise(self, text, show=True):
@@ -608,6 +698,7 @@ class CLI:
                 self.where = nxt
             except KeyboardInterrupt:
                 self.say("")
+                self._in_chat = False
                 self.tell("Stopped.", "yellow")
         self.save()
         self.say(self.p("  Bye!", "grey"))
@@ -747,9 +838,9 @@ class CLI:
         if self.s["wf_fix"]:
             wf.append("fix")
         self.rule("WRITE", "type a message and press Enter · empty line = back")
-        self.say("  " + self.p("/use", "accent", "bold") + self.p(f" → {' + '.join(wf + ['type'])}   ", "grey") +
-                 self.p("/paste", "accent", "bold") + self.p(" long message   ", "grey") +
-                 self.p("/ai", "accent", "bold") + self.p(" change AI   ", "grey") +
+        self.say("  " + self.p("/use", "accent", "bold") + self.p(f" {'+'.join(wf + ['type'])}  ", "grey") +
+                 self.p("/paste", "accent", "bold") + self.p(" long message  ", "grey") +
+                 self.p("/ai", "accent", "bold") + self.p(" change AI  ", "grey") +
                  self.p("/copy  /new", "accent", "bold"))
         problem = self.ai_problem()
         if problem:
@@ -1117,6 +1208,10 @@ class CLI:
             return k
         if k in ("p", "s"):
             text = self.read_block() if k == "p" else self.text
+            if not text.strip():
+                if k == "s":
+                    self.tell("There's no text to split yet (e on Home pastes some).", "yellow")
+                return None
             parts = self.ht.split_paragraphs(text)
             self.boxes = [{"text": t, "done": False, "spot": None, "cell": None} for t in parts]
             self.fill_cells()
@@ -1287,11 +1382,12 @@ class CLI:
                                                       else "")),
                 ("After /use", f"humanise {on(s['wf_humanise'])} · fix {on(s['wf_fix'])}")]
         lines = [self.p(name.ljust(14), "grey") + value for name, value in rows]
+        row_keys = ["w", "r", "y", "h", "t", "p", "a", "d", "g", "u"]
         k = self.screen("settings", lines, "SETTINGS · saved for next time", [
             ("w", "Speed"), ("r", "Random speed"), ("y", "Style"),
             ("h", "Rhythm"), ("t", "Typos"), ("p", "Pauses"),
             ("a", "Always wrong"), ("d", "Countdown"), ("g", "Background"),
-            ("u", "After /use")], "settings", "pick one to change it", height=10)
+            ("u", "After /use")], "settings", "pick one to change it (or click it)", height=10, row_keys=row_keys)
         if k in GLOBAL.values():
             return k
         if k == "w":
@@ -1374,8 +1470,11 @@ class CLI:
                  ("o", "Opus"), ("s", "Sonnet"), ("h", "Haiku"),
                  ("f", "Fable"), ("e", "Default model"), ("i", "Install Claude Code"),
                  ("n", "Log in"), ("r", "Check again"), ("c", "Claude app on"), ("x", "Claude app off")]
+        model_keys = {"opus": "o", "sonnet": "s", "haiku": "h", "fable": "f"}
+        row_keys = ([None, None, None, "a", "k", "l", None, None] + (["e"] if self.engine == "account" else []) +
+                    [model_keys.get(m) for m in ht.CLAUDE_MODELS] + [None, "x" if linked else "c"])
         k = self.screen("connect", lines, "AI · which one writes and humanises", items, "ai",
-                        "pick how, then which model", height=len(lines))
+                        "pick how, then which model (or click it)", height=len(lines), row_keys=row_keys)
         if k in GLOBAL.values():
             self.save()
             return k
@@ -1460,7 +1559,10 @@ class CLI:
             ("5 Settings", "Speed, style, typos, countdown, background. Saved for next time."),
             ("6 AI", "Pick the AI: your Claude account (install + log in, about a minute), an API key, or a "
                      "local AI, and the model: Opus, Sonnet, Haiku or Fable. /ai in Write jumps here."),
-            ("Keys", "1-6 jump anywhere · Esc home · q quit · Ctrl+C stops a reply, a rewrite or typing."),
+            ("Keys", "1-6 jump anywhere · Esc home · q quit · Ctrl+C stops a reply, a rewrite or typing. "
+                     "On a Mac or Linux you can also click the tabs and actions."),
+            ("Paste box", "Paste or type, then press Enter on two empty lines (or type a line with just a "
+                          "full stop). Ctrl+C cancels it."),
             ("Stop typing", "Ctrl+C, or the mouse to the top-left corner of the screen" +
                             ("." if sys.platform == "darwin" else ", or Esc. F8 pauses.")),
             ("Look real", "Careful, Natural or Messy: bursts, slow reaches, real mistakes it fixes. "
