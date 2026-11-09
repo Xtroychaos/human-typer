@@ -9,6 +9,8 @@ The app has three tabs, in the order you use them:
 2. **Polish** – humanise it for an audience, and check it for mistakes and AI-style habits.
 3. **Type** – pick a speed and it types it into your document.
 
+Lost? Press **? Help** (top right) for the whole app in five short steps.
+
 ![Human Typer window](screenshot.png)
 
 ## What it does
@@ -23,11 +25,19 @@ The app has three tabs, in the order you use them:
   wandering between them: it speeds up for a few words, slows down, and now and then hits the very slowest or fastest.
 - **Type in the background.** With Word, it can type while you keep using your computer. See
   [Typing in the background](#typing-in-the-background).
-- **Human rhythm.** Keys don't come at a perfectly even beat. It slows down between words, stops for a breath after
-  commas and full stops, waits a bit longer at new lines, and sometimes stops to "think".
-- **Typos it fixes itself.** It sometimes hits a key next to the right one, notices, presses Backspace, and types
-  the right letter. Sometimes it only notices one letter later. Set this to 0 if you don't want any typos.
-- **Choose what it messes up.** In **Always mess up**, list words and letters, like `the, because, e`. Those words get
+- **Pick a style.** Under **Make it look human**, press **Careful** (steady, very few mistakes), **Natural** (like
+  most people) or **Messy** (uneven, lots of mistakes it fixes). Or set the sliders yourself.
+- **Types like a real person.** Keys don't come at an even beat:
+  - **Finger timing:** common letter pairs like "th" and "er" roll quickly, keys on opposite hands are quick, one
+    finger moving to another key ("un", "my") is slower, and numbers and symbols take a reach.
+  - **Bursts:** each word has its own pace, long words get a small hesitation first, and the first few words are a
+    bit slower while it "warms up".
+  - **Pauses:** a breath after commas and full stops, longer at new lines, and now and then a stop to "think".
+- **Typos it fixes itself.** The mistakes people really make: the key next door, two letters swapped ("teh"), a
+  doubled letter ("helllo"), a skipped letter ("hllo"), sometimes only noticed a letter later, and now and then a
+  word started, rubbed out and started again. It always fixes them, so the finished text is exactly right. Set
+  typos to 0 if you don't want any.
+- **Choose what it gets wrong.** In **Always get these wrong**, list words and letters, like `the, because, e`. Those words get
   a mistake every time ("teh", "becuase") and those letters about half the time. With **Fix them** ticked, it notices
   and fixes them like the normal typos; untick it to leave the mistakes in the finished text.
 - **✨ Natural tone.** Switch it on to rewrite the text in the box so it reads like everyday writing (handy for emails
@@ -376,6 +386,22 @@ If you'd rather not use the downloaded app, you can run the Python file directly
   Accessibility list, turn on **Terminal** instead of Human Typer.
 - **Windows:** install Python (tick **"Add Python to PATH"**), then double-click `Start Human Typer (Windows).bat`.
 - **Anywhere:** `pip install -r requirements.txt`, then `python human_typer.py`.
+
+### Checking everything works
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+This checks the typing (the finished text is always exactly right, even with typos and restarts, and it takes the
+right time), the mistake checker, the AI check, APA, settings, and the link to Claude. GitHub runs it on every change.
+
+To also test the whole app on screen (every tab and theme, the Write → Polish → Type workflow, and real key presses
+into a text box), add `HT_GUI_TESTS=1`:
+
+```bash
+HT_GUI_TESTS=1 python -m unittest discover -s tests -v
+```
 
 ## How the apps are made
 
